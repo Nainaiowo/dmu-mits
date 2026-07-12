@@ -37,6 +37,11 @@ public sealed class MainWindow : Window, IDisposable
         {
             Flags |= ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize;
         }
+
+        if (plugin.Configuration.ClickThroughHelperWindow)
+        {
+            Flags |= ImGuiWindowFlags.NoInputs;
+        }
     }
 
     public override void Draw()
@@ -74,6 +79,11 @@ public sealed class MainWindow : Window, IDisposable
     {
         var text = plugin.GetUseNowText(now);
         ImGui.TextColored(GreenColor, text);
+
+        foreach (var note in plugin.GetUseNowNotes(now))
+        {
+            ImGui.TextColored(MutedColor, $"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.ShortText}");
+        }
     }
 
     private void DrawUpcomingBars(DateTime now)
@@ -122,13 +132,26 @@ public sealed class MainWindow : Window, IDisposable
 
         if (slot is not null && entry.Event.HasMitigationFor(slot.Value) && ImGui.IsItemHovered())
         {
+            var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot.Value);
+
             ImGui.BeginTooltip();
-            ImGui.TextUnformatted(entry.Event.GetMitigationFor(slot.Value));
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 32.0f);
+            ImGui.TextUnformatted(DmuMitigationData.GetMitigationDisplayText(entry.Event, slot.Value));
+            if (notes.Count > 0)
+            {
+                ImGui.Separator();
+                foreach (var note in notes)
+                {
+                    ImGui.TextWrapped($"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.DetailText}");
+                }
+            }
+
             if (!string.IsNullOrWhiteSpace(entry.Event.Extras))
             {
                 ImGui.Separator();
                 ImGui.TextWrapped(entry.Event.Extras);
             }
+            ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
     }

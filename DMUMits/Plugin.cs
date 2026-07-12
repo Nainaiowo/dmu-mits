@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
     [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
     [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static ITextureProvider TextureProvider { get; private set; } = null!;
     [PluginService] internal static IPluginLog Log { get; private set; } = null!;
 
     private readonly WindowSystem windowSystem = new("DMUMits");
@@ -102,6 +103,12 @@ public sealed class Plugin : IDalamudPlugin
     public void SetHelperWindowLocked(bool locked)
     {
         Configuration.LockHelperWindow = locked;
+        SaveConfiguration();
+    }
+
+    public void SetHelperWindowClickThrough(bool enabled)
+    {
+        Configuration.ClickThroughHelperWindow = enabled;
         SaveConfiguration();
     }
 
@@ -252,20 +259,35 @@ public sealed class Plugin : IDalamudPlugin
             return "Set your party slot";
         }
 
-        var upcoming = GetUpcomingEvents(now);
-        var useNow = upcoming.FirstOrDefault(entry => entry.IsUseNow && entry.Event.HasMitigationFor(slot.Value));
-        if (useNow is not null)
-        {
-            return useNow.Event.GetMitigationFor(slot.Value);
-        }
-
-        var next = upcoming.FirstOrDefault(entry => entry.Event.HasMitigationFor(slot.Value));
-        if (next is null)
+        var highlighted = GetHighlightedMitigationEvent(now, slot.Value);
+        if (highlighted is null)
         {
             return "No upcoming mit";
         }
 
-        return $"Next: {next.Event.GetMitigationFor(slot.Value)}";
+        var text = DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value);
+        return highlighted.IsUseNow ? text : $"Next: {text}";
+    }
+
+    public IReadOnlyList<MitigationNote> GetUseNowNotes(DateTime now)
+    {
+        var slot = LocalSlot;
+        if (slot is null)
+        {
+            return [];
+        }
+
+        var highlighted = GetHighlightedMitigationEvent(now, slot.Value);
+        return highlighted is null
+            ? []
+            : DmuMitigationData.GetMitigationNotes(highlighted.Event, slot.Value);
+    }
+
+    private UpcomingMitigationEvent? GetHighlightedMitigationEvent(DateTime now, PartySlot slot)
+    {
+        var upcoming = GetUpcomingEvents(now);
+        return upcoming.FirstOrDefault(entry => entry.IsUseNow && entry.Event.HasMitigationFor(slot)) ??
+            upcoming.FirstOrDefault(entry => entry.Event.HasMitigationFor(slot));
     }
 
     private void OnMainCommand(string command, string args)
@@ -422,7 +444,9 @@ public sealed class Plugin : IDalamudPlugin
     private void ReconcilePartyAssignments()
     {
         var changed = false;
-        foreach (var assignment in Configuration.PartySlots.Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberName)))
+        foreach (var assignment in Configuration.PartySlots
+            .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberName))
+            .ToList())
         {
             var matchingMember = CurrentParty.FirstOrDefault(member =>
                 !string.IsNullOrWhiteSpace(assignment.MemberKey) &&
@@ -430,6 +454,12 @@ public sealed class Plugin : IDalamudPlugin
                 FindUniqueCurrentPartyMemberByName(assignment.MemberName);
             if (matchingMember is null)
             {
+                continue;
+            }
+
+            if (TryMoveAssignmentToDefaultSlot(assignment, matchingMember))
+            {
+                changed = true;
                 continue;
             }
 
@@ -448,6 +478,34 @@ public sealed class Plugin : IDalamudPlugin
         {
             SaveConfiguration();
         }
+    }
+
+    private bool TryMoveAssignmentToDefaultSlot(PartySlotAssignment assignment, PartyMemberInfo member)
+    {
+        if (assignment.ClassJobId == member.ClassJobId)
+        {
+            return false;
+        }
+
+        var defaultSlot = PartySlotHelper.GetDefaultSlotForJob(member.ClassJobId);
+        if (defaultSlot is null || defaultSlot.Value == assignment.Slot)
+        {
+            return false;
+        }
+
+        var target = Configuration.PartySlots.FirstOrDefault(slot => slot.Slot == defaultSlot.Value);
+        if (target is null ||
+            !string.IsNullOrWhiteSpace(target.MemberKey) ||
+            !string.IsNullOrWhiteSpace(target.MemberName))
+        {
+            return false;
+        }
+
+        target.MemberKey = member.Key;
+        target.MemberName = member.Name;
+        target.ClassJobId = member.ClassJobId;
+        ClearAssignment(assignment);
+        return true;
     }
 
     private PartyMemberInfo? FindUniqueCurrentPartyMemberByName(string memberName)

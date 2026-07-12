@@ -61,6 +61,11 @@ public sealed record UpcomingMitigationEvent(
     bool IsUseNow,
     bool IsNext);
 
+public sealed record MitigationNote(
+    int Number,
+    string ShortText,
+    string DetailText);
+
 public sealed record PartyMemberInfo(
     string Key,
     string Name,

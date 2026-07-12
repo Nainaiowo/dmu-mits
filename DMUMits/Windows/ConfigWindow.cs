@@ -1,4 +1,5 @@
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Textures;
 using Dalamud.Interface.Windowing;
 using System;
 using System.Linq;
@@ -10,6 +11,9 @@ public sealed class ConfigWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
     private const string DragDropPayload = "DMUMitsSlot";
+    private static readonly Vector4 PlaceholderBorderColor = new(1.0f, 1.0f, 1.0f, 0.22f);
+    private static readonly Vector4 PlaceholderTextColor = new(0.70f, 0.74f, 0.78f, 1.0f);
+    private PartySlot? draggingSlot;
 
     public ConfigWindow(Plugin plugin) : base("DMU Mits Settings###DMUMitsConfig")
     {
@@ -59,9 +63,19 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.SetHelperWindowLocked(lockHelper);
         }
 
+        var clickThrough = plugin.Configuration.ClickThroughHelperWindow;
+        if (ImGui.Checkbox("Clickthrough helper window", ref clickThrough))
+        {
+            plugin.SetHelperWindowClickThrough(clickThrough);
+        }
+
         ImGui.TextDisabled(lockHelper
             ? "Unlock to move or resize the helper window."
             : "Move and resize the helper window, then lock it here.");
+        if (clickThrough)
+        {
+            ImGui.TextDisabled("Disable clickthrough to move, resize, or hover helper details.");
+        }
 
         ImGui.Separator();
 
@@ -139,6 +153,9 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var selectedName = string.IsNullOrWhiteSpace(assignment.MemberName) ? "(empty)" : assignment.MemberName;
+        var iconSize = MathF.Max(16.0f, ImGui.GetTextLineHeight());
+        DrawClassJobIcon(assignment.ClassJobId, iconSize, selectedName);
+        ImGui.SameLine();
         ImGui.SetNextItemWidth(-1.0f);
         if (ImGui.BeginCombo($"##slot-{assignment.Slot}", selectedName))
         {
@@ -155,7 +172,10 @@ public sealed class ConfigWindow : Window, IDisposable
                 }
 
                 var selected = PartySlotHelper.AssignmentMatchesMember(assignment, member);
-                if (ImGui.Selectable(member.Name, selected))
+                DrawClassJobIcon(member.ClassJobId, iconSize, member.Name);
+                var iconClicked = ImGui.IsItemClicked();
+                ImGui.SameLine();
+                if (ImGui.Selectable($"{member.Name}##{member.Key}", selected) || iconClicked)
                 {
                     plugin.AssignSlot(assignment.Slot, member);
                 }
@@ -166,7 +186,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.BeginDragDropSource())
         {
-            ImGui.SetDragDropPayload(DragDropPayload, [(byte)assignment.Slot]);
+            draggingSlot = assignment.Slot;
+            ImGui.SetDragDropPayload(DragDropPayload, [1]);
             ImGui.TextUnformatted(selectedName);
             ImGui.EndDragDropSource();
         }
@@ -174,9 +195,8 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.BeginDragDropTarget())
         {
             var payload = ImGui.AcceptDragDropPayload(DragDropPayload);
-            if (payload.Data != null && payload.DataSize == 1)
+            if (payload.Handle != null && draggingSlot is { } sourceSlot)
             {
-                var sourceSlot = (PartySlot)(*(byte*)payload.Data);
                 SwapSlots(sourceSlot, assignment.Slot);
             }
 
@@ -186,6 +206,8 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void SwapSlots(PartySlot sourceSlot, PartySlot targetSlot)
     {
+        draggingSlot = null;
+
         if (sourceSlot == targetSlot)
         {
             return;
@@ -202,6 +224,74 @@ public sealed class ConfigWindow : Window, IDisposable
         (source.MemberName, target.MemberName) = (target.MemberName, source.MemberName);
         (source.ClassJobId, target.ClassJobId) = (target.ClassJobId, source.ClassJobId);
         plugin.SaveConfiguration();
+    }
+
+    private static void DrawClassJobIcon(uint classJobId, float iconSize, string tooltip)
+    {
+        var iconId = GetClassJobIconId(classJobId);
+        if (iconId == 0)
+        {
+            ImGui.Dummy(new Vector2(iconSize));
+            return;
+        }
+
+        if (iconId != 0)
+        {
+            try
+            {
+                var texture = Plugin.TextureProvider.GetFromGameIcon(new GameIconLookup(iconId));
+                var wrap = texture.GetWrapOrDefault();
+                if (wrap is not null)
+                {
+                    ImGui.Image(wrap.Handle, new Vector2(iconSize));
+                    if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(tooltip))
+                    {
+                        ImGui.SetTooltip(tooltip);
+                    }
+
+                    return;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        DrawClassJobPlaceholder(iconSize, tooltip);
+    }
+
+    private static void DrawClassJobPlaceholder(float iconSize, string tooltip)
+    {
+        var size = new Vector2(iconSize);
+        var start = ImGui.GetCursorScreenPos();
+        ImGui.Dummy(size);
+
+        var drawList = ImGui.GetWindowDrawList();
+        drawList.AddRect(
+            start,
+            start + size,
+            ImGui.GetColorU32(PlaceholderBorderColor),
+            3.0f);
+
+        if (!string.IsNullOrWhiteSpace(tooltip))
+        {
+            var text = "?";
+            var textSize = ImGui.CalcTextSize(text);
+            drawList.AddText(
+                start + new Vector2(MathF.Max(0.0f, (size.X - textSize.X) * 0.5f), MathF.Max(0.0f, (size.Y - textSize.Y) * 0.5f)),
+                ImGui.GetColorU32(PlaceholderTextColor),
+                text);
+        }
+
+        if (ImGui.IsItemHovered() && !string.IsNullOrWhiteSpace(tooltip))
+        {
+            ImGui.SetTooltip(tooltip);
+        }
+    }
+
+    private static uint GetClassJobIconId(uint classJobId)
+    {
+        return classJobId == 0 ? 0 : 62100u + classJobId;
     }
 
     private void DrawTimelineAudit()
