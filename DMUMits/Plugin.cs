@@ -1,0 +1,539 @@
+using DMUMits.Windows;
+using Dalamud.Game.ClientState.Conditions;
+using Dalamud.Game.ClientState.Objects.Enums;
+using Dalamud.Game.ClientState.Objects.Types;
+using Dalamud.Game.Command;
+using Dalamud.Game.DutyState;
+using Dalamud.Interface.Windowing;
+using Dalamud.IoC;
+using Dalamud.Plugin;
+using Dalamud.Plugin.Services;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+namespace DMUMits;
+
+public sealed class Plugin : IDalamudPlugin
+{
+    private const string MainCommandName = "/dmumits";
+    private const string ShortCommandName = "/dmit";
+    private static readonly TimeSpan SyncPollInterval = TimeSpan.FromSeconds(1);
+    private const float SyncDriftToleranceSeconds = 1.5f;
+
+    [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
+    [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
+    [PluginService] internal static IClientState ClientState { get; private set; } = null!;
+    [PluginService] internal static ICondition Condition { get; private set; } = null!;
+    [PluginService] internal static IPartyList PartyList { get; private set; } = null!;
+    [PluginService] internal static IPlayerState PlayerState { get; private set; } = null!;
+    [PluginService] internal static IObjectTable ObjectTable { get; private set; } = null!;
+    [PluginService] internal static IDutyState DutyState { get; private set; } = null!;
+    [PluginService] internal static IFramework Framework { get; private set; } = null!;
+    [PluginService] internal static IPluginLog Log { get; private set; } = null!;
+
+    private readonly WindowSystem windowSystem = new("DMUMits");
+    private readonly MainWindow mainWindow;
+    private readonly ConfigWindow configWindow;
+    private DateTime lastSyncPollAtUtc = DateTime.MinValue;
+    private bool wasInCombat;
+
+    public Configuration Configuration { get; }
+
+    public IReadOnlyList<PartyMemberInfo> CurrentParty { get; private set; } = [];
+
+    public PhaseState? CurrentPhaseState { get; private set; }
+
+    public PartySlot? LocalSlot { get; private set; }
+
+    public bool IsInDmu => ClientState.TerritoryType == DmuMitigationData.DmuTerritoryId;
+
+    public bool IsInCombat => Condition[ConditionFlag.InCombat];
+
+    public Plugin()
+    {
+        Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        EnsureSlotList();
+
+        mainWindow = new MainWindow(this)
+        {
+            IsOpen = Configuration.ShowWindow,
+        };
+        configWindow = new ConfigWindow(this);
+
+        windowSystem.AddWindow(mainWindow);
+        windowSystem.AddWindow(configWindow);
+
+        CommandManager.AddHandler(MainCommandName, new CommandInfo(OnMainCommand)
+        {
+            HelpMessage = "Open DMU Mits.",
+        });
+        CommandManager.AddHandler(ShortCommandName, new CommandInfo(OnMainCommand)
+        {
+            HelpMessage = "Open DMU Mits.",
+        });
+
+        PluginInterface.UiBuilder.Draw += windowSystem.Draw;
+        PluginInterface.UiBuilder.OpenMainUi += ToggleMainWindow;
+        PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigWindow;
+        Framework.Update += OnFrameworkUpdate;
+        DutyState.DutyStarted += OnDutyReset;
+        DutyState.DutyWiped += OnDutyReset;
+        DutyState.DutyRecommenced += OnDutyReset;
+    }
+
+    public void Dispose()
+    {
+        DutyState.DutyRecommenced -= OnDutyReset;
+        DutyState.DutyWiped -= OnDutyReset;
+        DutyState.DutyStarted -= OnDutyReset;
+        Framework.Update -= OnFrameworkUpdate;
+        PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigWindow;
+        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainWindow;
+        PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
+        CommandManager.RemoveHandler(ShortCommandName);
+        CommandManager.RemoveHandler(MainCommandName);
+        windowSystem.RemoveAllWindows();
+        configWindow.Dispose();
+        mainWindow.Dispose();
+    }
+
+    public void ToggleMainWindow()
+    {
+        mainWindow.Toggle();
+        Configuration.ShowWindow = mainWindow.IsOpen;
+        SaveConfiguration();
+    }
+
+    public void OpenMainWindow()
+    {
+        Configuration.ShowWindow = true;
+        mainWindow.IsOpen = true;
+        SaveConfiguration();
+    }
+
+    public void ToggleConfigWindow()
+    {
+        configWindow.Toggle();
+    }
+
+    public void SetShowWindow(bool enabled)
+    {
+        Configuration.ShowWindow = enabled;
+        mainWindow.IsOpen = enabled;
+        SaveConfiguration();
+    }
+
+    public void SetPreviewWhenInactive(bool enabled)
+    {
+        Configuration.PreviewWhenInactive = enabled;
+        SaveConfiguration();
+    }
+
+    public void SetFontScale(float value)
+    {
+        Configuration.FontScale = Math.Clamp(value, 0.75f, 1.75f);
+        SaveConfiguration();
+    }
+
+    public void SetWindowOpacity(float value)
+    {
+        Configuration.WindowOpacity = Math.Clamp(value, 0.2f, 1.0f);
+        SaveConfiguration();
+    }
+
+    public void SetLookAheadSeconds(float value)
+    {
+        Configuration.LookAheadSeconds = Math.Clamp(value, 30.0f, 180.0f);
+        SaveConfiguration();
+    }
+
+    public void SetUseNowLeadSeconds(float value)
+    {
+        Configuration.UseNowLeadSeconds = Math.Clamp(value, 4.0f, 25.0f);
+        SaveConfiguration();
+    }
+
+    public void SaveConfiguration()
+    {
+        EnsureSlotList();
+        Configuration.Save();
+    }
+
+    public void AutoAssignPartySlots()
+    {
+        Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
+        RefreshLocalSlot();
+        SaveConfiguration();
+    }
+
+    public void AssignSlot(PartySlot slot, PartyMemberInfo? member)
+    {
+        EnsureSlotList();
+        var assignment = Configuration.PartySlots.First(entry => entry.Slot == slot);
+        if (member is null)
+        {
+            assignment.MemberKey = string.Empty;
+            assignment.MemberName = string.Empty;
+            assignment.ClassJobId = 0;
+        }
+        else
+        {
+            foreach (var other in Configuration.PartySlots.Where(slot =>
+                slot.Slot != assignment.Slot &&
+                string.Equals(slot.MemberKey, member.Key, StringComparison.Ordinal)))
+            {
+                other.MemberKey = string.Empty;
+                other.MemberName = string.Empty;
+                other.ClassJobId = 0;
+            }
+
+            assignment.MemberKey = member.Key;
+            assignment.MemberName = member.Name;
+            assignment.ClassJobId = member.ClassJobId;
+        }
+
+        RefreshLocalSlot();
+        SaveConfiguration();
+    }
+
+    public IReadOnlyList<UpcomingMitigationEvent> GetUpcomingEvents(DateTime now)
+    {
+        var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
+        var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
+        if (CurrentPhaseState is null && !Configuration.PreviewWhenInactive)
+        {
+            return [];
+        }
+
+        var slot = LocalSlot;
+        var events = DmuMitigationData.GetEventsForPhase(phase)
+            .Where(entry => entry.PhaseTimeSeconds >= phaseElapsed - 2.0f)
+            .Select(entry => new UpcomingMitigationEvent(
+                entry,
+                entry.PhaseTimeSeconds - phaseElapsed,
+                slot is not null && entry.HasMitigationFor(slot.Value) && entry.PhaseTimeSeconds - phaseElapsed <= Configuration.UseNowLeadSeconds,
+                false))
+            .Where(entry => entry.SecondsRemaining <= Configuration.LookAheadSeconds)
+            .OrderBy(entry => entry.SecondsRemaining)
+            .Take(8)
+            .ToList();
+
+        var nextMitIndex = slot is null
+            ? -1
+            : events.FindIndex(entry => entry.Event.HasMitigationFor(slot.Value));
+        if (nextMitIndex < 0)
+        {
+            return events;
+        }
+
+        return events
+            .Select((entry, index) => entry with { IsNext = index == nextMitIndex })
+            .ToList();
+    }
+
+    public string GetUseNowText(DateTime now)
+    {
+        var slot = LocalSlot;
+        if (slot is null)
+        {
+            return "Set your party slot";
+        }
+
+        var upcoming = GetUpcomingEvents(now);
+        var useNow = upcoming.FirstOrDefault(entry => entry.IsUseNow && entry.Event.HasMitigationFor(slot.Value));
+        if (useNow is not null)
+        {
+            return useNow.Event.GetMitigationFor(slot.Value);
+        }
+
+        var next = upcoming.FirstOrDefault(entry => entry.Event.HasMitigationFor(slot.Value));
+        if (next is null)
+        {
+            return "No upcoming mit";
+        }
+
+        return $"Next: {next.Event.GetMitigationFor(slot.Value)}";
+    }
+
+    private void OnMainCommand(string command, string args)
+    {
+        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
+        {
+            ToggleConfigWindow();
+            return;
+        }
+
+        ToggleMainWindow();
+    }
+
+    private void OnDutyReset(IDutyStateEventArgs args)
+    {
+        ResetPhaseState();
+        wasInCombat = false;
+    }
+
+    private void OnFrameworkUpdate(IFramework framework)
+    {
+        var now = DateTime.UtcNow;
+        if (now - lastSyncPollAtUtc < SyncPollInterval)
+        {
+            return;
+        }
+
+        lastSyncPollAtUtc = now;
+        RefreshParty();
+        RefreshPhaseState(now);
+    }
+
+    private void RefreshParty()
+    {
+        var members = new List<PartyMemberInfo>();
+        var index = 0;
+        foreach (var member in PartyList)
+        {
+            var name = member.Name.TextValue;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                index++;
+                continue;
+            }
+
+            var key = member.ContentId != 0
+                ? member.ContentId.ToString("X16")
+                : $"{name}:{index}";
+            members.Add(new PartyMemberInfo(
+                key,
+                name,
+                index,
+                member.ContentId,
+                member.EntityId,
+                member.ClassJob.RowId));
+            index++;
+        }
+
+        CurrentParty = members;
+        if (Configuration.PartySlots.All(slot => string.IsNullOrWhiteSpace(slot.MemberKey)) && CurrentParty.Count > 0)
+        {
+            Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
+            SaveConfiguration();
+        }
+
+        RefreshLocalSlot();
+    }
+
+    private void RefreshLocalSlot()
+    {
+        var localContentId = PlayerState.ContentId;
+        var localEntityId = ObjectTable.LocalPlayer?.EntityId ?? 0;
+        var localMember = CurrentParty.FirstOrDefault(member =>
+            (localContentId != 0 && member.ContentId == localContentId) ||
+            (localEntityId != 0 && member.EntityId == localEntityId));
+        LocalSlot = PartySlotHelper.FindSlotForMember(Configuration.PartySlots, localMember);
+    }
+
+    private void RefreshPhaseState(DateTime now)
+    {
+        if (!IsInDmu)
+        {
+            ResetPhaseState();
+            wasInCombat = false;
+            return;
+        }
+
+        var inCombat = IsInCombat;
+        if (inCombat && !wasInCombat)
+        {
+            SetPhase(DmuPhase.P1, now, "Combat start");
+        }
+        wasInCombat = inCombat;
+
+        if (!inCombat && CurrentPhaseState is not null)
+        {
+            return;
+        }
+
+        var livePhase = DetectLivePhase();
+        if (livePhase is not DmuPhase.Unknown &&
+            (CurrentPhaseState is null || livePhase > CurrentPhaseState.Phase))
+        {
+            SetPhase(livePhase, now, "Live phase signal");
+        }
+
+        SyncFromVisibleCasts(now);
+    }
+
+    private DmuPhase DetectLivePhase()
+    {
+        if (!IsInDmu)
+        {
+            return DmuPhase.Unknown;
+        }
+
+        var sawP3Boss = false;
+        var sawP4Signal = false;
+        var sawP5Signal = false;
+        foreach (var gameObject in ObjectTable)
+        {
+            if (gameObject is not IBattleNpc battleNpc)
+            {
+                continue;
+            }
+
+            var name = battleNpc.Name.TextValue;
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            if (name.Contains("Ultima Kefka", StringComparison.OrdinalIgnoreCase))
+            {
+                sawP5Signal = true;
+            }
+
+            if (name.Contains("Neo Exdeath", StringComparison.OrdinalIgnoreCase))
+            {
+                sawP4Signal = true;
+            }
+
+            if (name.Contains("Chaos", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(name, "Exdeath", StringComparison.OrdinalIgnoreCase))
+            {
+                sawP3Boss = true;
+            }
+        }
+
+        if (CurrentPartyHasAnyStatus(5543, 5544, 5545, 5546, 5547, 5548, 4887, 4888, 454, 5464))
+        {
+            sawP4Signal = true;
+        }
+
+        if (sawP5Signal)
+        {
+            return DmuPhase.P5;
+        }
+
+        if (sawP4Signal)
+        {
+            return DmuPhase.P4;
+        }
+
+        return sawP3Boss ? DmuPhase.P3 : DmuPhase.Unknown;
+    }
+
+    private bool CurrentPartyHasAnyStatus(params uint[] statusIds)
+    {
+        var statusSet = statusIds.ToHashSet();
+        foreach (var member in PartyList)
+        {
+            foreach (var status in member.Statuses)
+            {
+                if (statusSet.Contains(status.StatusId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private void SyncFromVisibleCasts(DateTime now)
+    {
+        var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
+        var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
+        foreach (var gameObject in ObjectTable)
+        {
+            if (gameObject is not IBattleNpc battleNpc ||
+                battleNpc is not IBattleChara battleChara ||
+                !battleChara.IsCasting ||
+                battleChara.CastActionId == 0)
+            {
+                continue;
+            }
+
+            var syncEvent = CurrentPhaseState is null
+                ? DmuMitigationData.FindForwardSyncEvent(DmuPhase.P1, battleChara.CastActionId)
+                : DmuMitigationData.FindSyncEvent(phase, battleChara.CastActionId, phaseElapsed) ??
+                    DmuMitigationData.FindForwardSyncEvent(GetNextPhase(phase), battleChara.CastActionId);
+            if (syncEvent is null)
+            {
+                continue;
+            }
+
+            var observedPhaseElapsed = Math.Max(0.0f, syncEvent.PhaseTimeSeconds - battleChara.CurrentCastTime);
+            if (CurrentPhaseState is null || syncEvent.Phase != phase)
+            {
+                CurrentPhaseState = new PhaseState(
+                    syncEvent.Phase,
+                    now.AddSeconds(-observedPhaseElapsed),
+                    $"Synced to {syncEvent.Name}");
+                return;
+            }
+
+            var drift = MathF.Abs(observedPhaseElapsed - phaseElapsed);
+            if (drift <= SyncDriftToleranceSeconds)
+            {
+                continue;
+            }
+
+            CurrentPhaseState = new PhaseState(
+                syncEvent.Phase,
+                now.AddSeconds(-observedPhaseElapsed),
+                $"Synced to {syncEvent.Name}");
+            return;
+        }
+    }
+
+    private void SetPhase(DmuPhase phase, DateTime now, string label)
+    {
+        CurrentPhaseState = new PhaseState(phase, now, label);
+    }
+
+    private void ResetPhaseState()
+    {
+        CurrentPhaseState = null;
+    }
+
+    private void EnsureSlotList()
+    {
+        foreach (var slot in PartySlotHelper.OrderedSlots)
+        {
+            if (Configuration.PartySlots.All(entry => entry.Slot != slot))
+            {
+                Configuration.PartySlots.Add(new PartySlotAssignment { Slot = slot });
+            }
+        }
+
+        Configuration.PartySlots = Configuration.PartySlots
+            .Where(entry => PartySlotHelper.OrderedSlots.Contains(entry.Slot))
+            .OrderBy(entry => GetSlotOrder(entry.Slot))
+            .ToList();
+    }
+
+    private static int GetSlotOrder(PartySlot slot)
+    {
+        for (var index = 0; index < PartySlotHelper.OrderedSlots.Count; index++)
+        {
+            if (PartySlotHelper.OrderedSlots[index] == slot)
+            {
+                return index;
+            }
+        }
+
+        return int.MaxValue;
+    }
+
+    private static DmuPhase GetNextPhase(DmuPhase phase)
+    {
+        return phase switch
+        {
+            DmuPhase.Unknown => DmuPhase.P1,
+            DmuPhase.P1 => DmuPhase.P2,
+            DmuPhase.P2 => DmuPhase.P3,
+            DmuPhase.P3 => DmuPhase.P4,
+            DmuPhase.P4 => DmuPhase.P5,
+            _ => DmuPhase.P5,
+        };
+    }
+}

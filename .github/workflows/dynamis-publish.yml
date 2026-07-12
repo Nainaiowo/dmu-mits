@@ -1,0 +1,70 @@
+name: Publish to Dynamis
+
+"on":
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release type
+        required: true
+        type: choice
+        default: testing
+        options:
+          - testing
+          - latest
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DALAMUD_HOME: /tmp/dalamud
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate Dynamis configuration
+        shell: bash
+        env:
+          DYNAMIS_PLUGIN_ID: ${{ vars.DYNAMIS_PLUGIN_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DYNAMIS_PLUGIN_ID}" ]; then
+            echo "::error::Set repository variable DYNAMIS_PLUGIN_ID to the numeric plugin ID from the Dynamis dashboard."
+            exit 1
+          fi
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Download Dalamud
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${DALAMUD_HOME}"
+          curl -L https://goatcorp.github.io/dalamud-distrib/latest.zip -o "${RUNNER_TEMP}/dalamud.zip"
+          unzip -q "${RUNNER_TEMP}/dalamud.zip" -d "${DALAMUD_HOME}"
+
+      - name: Restore project
+        run: dotnet restore DMUMits/DMUMits.csproj -p:EnableWindowsTargeting=true
+
+      - name: Build project
+        run: dotnet build --configuration Release --no-restore DMUMits/DMUMits.csproj -p:EnableWindowsTargeting=true
+
+      - name: List build output
+        run: find DMUMits/bin/Release -maxdepth 5 -type f | sort
+
+      - name: Publish to Dynamis
+        uses: PunishXIV/dynamis-action@v3.0.0
+        with:
+          plugin_id: ${{ vars.DYNAMIS_PLUGIN_ID }}
+          internal_name: DMUMits
+          path: DMUMits/bin/Release/DMUMits/latest.zip
+          type: ${{ inputs.release_type }}
+        env:
+          PUBLISHER_KEY: ${{ secrets.PRODUCTION_KEY }}

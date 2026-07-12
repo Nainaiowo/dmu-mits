@@ -1,0 +1,16 @@
+{
+  "Author": "Nainaiowo",
+  "Name": "DMU Mits",
+  "InternalName": "DMUMits",
+  "Punchline": "DMU mitigation timeline helper.",
+  "Description": "Shows upcoming dmu mitigation based on fight timeline",
+  "Changelog": "Initial local build.",
+  "RepoUrl": "https://github.com/Nainaiowo/dmu-mits",
+  "ApplicableVersion": "any",
+  "Tags": [
+    "dmu",
+    "mitigation",
+    "timeline",
+    "ultimate"
+  ]
+}
