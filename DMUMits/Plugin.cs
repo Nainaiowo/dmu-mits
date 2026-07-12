@@ -20,6 +20,8 @@ public sealed class Plugin : IDalamudPlugin
     private const string ShortCommandName = "/dmit";
     private static readonly TimeSpan SyncPollInterval = TimeSpan.FromSeconds(1);
     private const float SyncDriftToleranceSeconds = 1.5f;
+    private const float PreviewLeadInSeconds = 14.0f;
+    private const float PreviewLoopPaddingSeconds = 12.0f;
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -36,6 +38,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly WindowSystem windowSystem = new("DMUMits");
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
+    private readonly DateTime previewStartedAtUtc = DateTime.UtcNow;
     private DateTime lastSyncPollAtUtc = DateTime.MinValue;
     private int? lastPartySignature;
     private bool wasInCombat;
@@ -51,6 +54,8 @@ public sealed class Plugin : IDalamudPlugin
     public bool IsInDmu => ClientState.TerritoryType == DmuMitigationData.DmuTerritoryId;
 
     public bool IsInCombat => Condition[ConditionFlag.InCombat];
+
+    public bool IsPreviewActive => CurrentPhaseState is null && Configuration.PreviewWhenInactive;
 
     public Plugin()
     {
@@ -218,15 +223,38 @@ public sealed class Plugin : IDalamudPlugin
 
     public IReadOnlyList<UpcomingMitigationEvent> GetUpcomingEvents(DateTime now)
     {
-        var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
-        var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
-        if (CurrentPhaseState is null && !Configuration.PreviewWhenInactive)
+        if (CurrentPhaseState is null)
         {
-            return [];
+            return Configuration.PreviewWhenInactive
+                ? GetPreviewUpcomingEvents(now)
+                : [];
         }
 
+        return GetLiveUpcomingEvents(now);
+    }
+
+    public float GetPreviewElapsedSeconds(DateTime now)
+    {
+        var events = DmuMitigationData.GetEventsForPhase(DmuPhase.P1);
+        if (events.Count == 0)
+        {
+            return 0.0f;
+        }
+
+        var firstEventTime = events[0].PhaseTimeSeconds;
+        var loopStart = MathF.Max(0.0f, firstEventTime - PreviewLeadInSeconds);
+        var loopLength = GetPreviewLoopLength(events, loopStart);
+        var elapsedInLoop = (float)(now - previewStartedAtUtc).TotalSeconds % loopLength;
+        return loopStart + elapsedInLoop;
+    }
+
+    private IReadOnlyList<UpcomingMitigationEvent> GetLiveUpcomingEvents(DateTime now)
+    {
+        var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
+        var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
         var slot = LocalSlot;
-        var events = DmuMitigationData.GetEventsForPhase(phase)
+        var events = DmuMitigationData.GetEventsForPhase(phase);
+        return MarkNextMitigation(events
             .Where(entry => entry.PhaseTimeSeconds >= phaseElapsed - 2.0f)
             .Select(entry => new UpcomingMitigationEvent(
                 entry,
@@ -236,11 +264,66 @@ public sealed class Plugin : IDalamudPlugin
             .Where(entry => entry.SecondsRemaining <= Configuration.LookAheadSeconds)
             .OrderBy(entry => entry.SecondsRemaining)
             .Take(8)
-            .ToList();
+            .ToList(),
+            slot);
+    }
 
-        var nextMitIndex = slot is null
-            ? -1
-            : events.FindIndex(entry => entry.Event.HasMitigationFor(slot.Value));
+    private IReadOnlyList<UpcomingMitigationEvent> GetPreviewUpcomingEvents(DateTime now)
+    {
+        var events = DmuMitigationData.GetEventsForPhase(DmuPhase.P1);
+        if (events.Count == 0)
+        {
+            return [];
+        }
+
+        var slot = LocalSlot;
+        var firstEventTime = events[0].PhaseTimeSeconds;
+        var loopStart = MathF.Max(0.0f, firstEventTime - PreviewLeadInSeconds);
+        var phaseElapsed = GetPreviewElapsedSeconds(now);
+        var loopLength = GetPreviewLoopLength(events, loopStart);
+
+        return MarkNextMitigation(events
+            .Select(entry =>
+            {
+                var secondsRemaining = entry.PhaseTimeSeconds - phaseElapsed;
+                while (secondsRemaining < -2.0f)
+                {
+                    secondsRemaining += loopLength;
+                }
+
+                return new UpcomingMitigationEvent(
+                    entry,
+                    secondsRemaining,
+                    slot is not null && entry.HasMitigationFor(slot.Value) && secondsRemaining <= Configuration.UseNowLeadSeconds,
+                    false);
+            })
+            .OrderBy(entry => entry.SecondsRemaining)
+            .Take(8)
+            .ToList(),
+            slot);
+    }
+
+    private IReadOnlyList<UpcomingMitigationEvent> MarkNextMitigation(
+        IReadOnlyList<UpcomingMitigationEvent> events,
+        PartySlot? slot)
+    {
+        if (events.Count == 0)
+        {
+            return events;
+        }
+
+        var nextMitIndex = -1;
+        if (slot is not null)
+        {
+            for (var index = 0; index < events.Count; index++)
+            {
+                if (events[index].Event.HasMitigationFor(slot.Value))
+                {
+                    nextMitIndex = index;
+                    break;
+                }
+            }
+        }
         if (nextMitIndex < 0)
         {
             return events;
@@ -249,6 +332,12 @@ public sealed class Plugin : IDalamudPlugin
         return events
             .Select((entry, index) => entry with { IsNext = index == nextMitIndex })
             .ToList();
+    }
+
+    private static float GetPreviewLoopLength(IReadOnlyList<DmuTimelineEvent> events, float loopStart)
+    {
+        var lastEventTime = events[^1].PhaseTimeSeconds;
+        return MathF.Max(PreviewLeadInSeconds + PreviewLoopPaddingSeconds, lastEventTime + PreviewLoopPaddingSeconds - loopStart);
     }
 
     public string GetUseNowText(DateTime now)
@@ -267,6 +356,14 @@ public sealed class Plugin : IDalamudPlugin
 
         var text = DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value);
         return highlighted.IsUseNow ? text : $"Next: {text}";
+    }
+
+    public UpcomingMitigationEvent? GetHighlightedMitigationEvent(DateTime now)
+    {
+        var slot = LocalSlot;
+        return slot is null
+            ? null
+            : GetHighlightedMitigationEvent(now, slot.Value);
     }
 
     public IReadOnlyList<MitigationNote> GetUseNowNotes(DateTime now)

@@ -65,9 +65,13 @@ public sealed class MainWindow : Window, IDisposable
             : GetPhaseName(phaseState.Phase);
         ImGui.TextUnformatted("DMU Mits");
         ImGui.SameLine();
-        ImGui.TextColored(MutedColor, phaseState is null
-            ? plugin.IsInDmu ? "Waiting for pull" : "Waiting for DMU"
-            : $"{phaseName}  {FormatTime(phaseState.ElapsedSeconds(now))}");
+        var statusText = phaseState switch
+        {
+            not null => $"{phaseName}  {FormatTime(phaseState.ElapsedSeconds(now))}",
+            null when plugin.IsPreviewActive => $"{phaseName}  {FormatTime(plugin.GetPreviewElapsedSeconds(now))}",
+            _ => plugin.IsInDmu ? "Waiting for pull" : "Waiting for DMU",
+        };
+        ImGui.TextColored(MutedColor, statusText);
 
         if (phaseState is not null && !string.IsNullOrWhiteSpace(phaseState.SyncLabel))
         {
@@ -77,8 +81,19 @@ public sealed class MainWindow : Window, IDisposable
 
     private void DrawUseNow(DateTime now)
     {
-        var text = plugin.GetUseNowText(now);
-        ImGui.TextColored(GreenColor, text);
+        var slot = plugin.LocalSlot;
+        var highlighted = plugin.GetHighlightedMitigationEvent(now);
+        var textColor = highlighted is null
+            ? MutedColor
+            : highlighted.IsUseNow ? GreenColor : GoldColor;
+        var text = slot is null
+            ? "Set your party slot"
+            : highlighted is null
+                ? "No upcoming mit"
+                : highlighted.IsUseNow
+                    ? DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value)
+                    : $"Next: {DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value)}";
+        ImGui.TextColored(textColor, text);
 
         foreach (var note in plugin.GetUseNowNotes(now))
         {
