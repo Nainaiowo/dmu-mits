@@ -19,7 +19,6 @@ public sealed class Plugin : IDalamudPlugin
     private const string MainCommandName = "/dmumits";
     private const string ShortCommandName = "/dmit";
     private static readonly TimeSpan SyncPollInterval = TimeSpan.FromSeconds(1);
-    private const float SyncDriftToleranceSeconds = 1.5f;
     private const float PreviewLeadInSeconds = 14.0f;
     private const float PreviewLoopPaddingSeconds = 12.0f;
 
@@ -39,6 +38,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private readonly DateTime previewStartedAtUtc = DateTime.UtcNow;
+    private readonly HashSet<DmuPhase> castSyncedPhases = [];
     private DateTime lastSyncPollAtUtc = DateTime.MinValue;
     private int? lastPartySignature;
     private bool wasInCombat;
@@ -667,11 +667,17 @@ public sealed class Plugin : IDalamudPlugin
         var inCombat = IsInCombat;
         if (inCombat && !wasInCombat)
         {
+            castSyncedPhases.Clear();
             SetPhase(DmuPhase.P1, now, "Combat start");
         }
         wasInCombat = inCombat;
 
         if (!inCombat && CurrentPhaseState is not null)
+        {
+            return;
+        }
+
+        if (TrySyncForwardPhaseFromVisibleCasts(now))
         {
             return;
         }
@@ -683,7 +689,7 @@ public sealed class Plugin : IDalamudPlugin
             SetPhase(livePhase, now, "Live phase signal");
         }
 
-        SyncFromVisibleCasts(now);
+        TryAnchorCurrentPhaseFromVisibleCasts(now);
     }
 
     private DmuPhase DetectLivePhase()
@@ -761,51 +767,78 @@ public sealed class Plugin : IDalamudPlugin
         return false;
     }
 
-    private void SyncFromVisibleCasts(DateTime now)
+    private bool TrySyncForwardPhaseFromVisibleCasts(DateTime now)
     {
-        var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
-        var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
-        foreach (var gameObject in ObjectTable)
+        var searchPhase = CurrentPhaseState is null
+            ? DmuPhase.P1
+            : GetNextPhase(CurrentPhaseState.Phase);
+        if (searchPhase > DmuPhase.P5)
         {
-            if (gameObject is not IBattleNpc battleNpc ||
-                battleNpc is not IBattleChara battleChara ||
-                !battleChara.IsCasting ||
-                battleChara.CastActionId == 0)
+            return false;
+        }
+
+        foreach (var battleChara in GetVisibleSyncCasts())
+        {
+            var syncEvent = DmuMitigationData.FindForwardSyncEvent(searchPhase, battleChara.CastActionId);
+            if (syncEvent is null ||
+                CurrentPhaseState is not null && syncEvent.Phase <= CurrentPhaseState.Phase)
             {
                 continue;
             }
 
-            var syncEvent = CurrentPhaseState is null
-                ? DmuMitigationData.FindForwardSyncEvent(DmuPhase.P1, battleChara.CastActionId)
-                : DmuMitigationData.FindSyncEvent(phase, battleChara.CastActionId, phaseElapsed) ??
-                    DmuMitigationData.FindForwardSyncEvent(GetNextPhase(phase), battleChara.CastActionId);
+            ApplyCastSync(syncEvent, now, battleChara.CurrentCastTime);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryAnchorCurrentPhaseFromVisibleCasts(DateTime now)
+    {
+        if (CurrentPhaseState is null || castSyncedPhases.Contains(CurrentPhaseState.Phase))
+        {
+            return false;
+        }
+
+        var phase = CurrentPhaseState.Phase;
+        var phaseElapsed = CurrentPhaseState.ElapsedSeconds(now);
+        foreach (var battleChara in GetVisibleSyncCasts())
+        {
+            var syncEvent = DmuMitigationData.FindSyncEvent(phase, battleChara.CastActionId, phaseElapsed);
             if (syncEvent is null)
             {
                 continue;
             }
 
-            var observedPhaseElapsed = Math.Max(0.0f, syncEvent.PhaseTimeSeconds - battleChara.CurrentCastTime);
-            if (CurrentPhaseState is null || syncEvent.Phase != phase)
-            {
-                CurrentPhaseState = new PhaseState(
-                    syncEvent.Phase,
-                    now.AddSeconds(-observedPhaseElapsed),
-                    $"Synced to {syncEvent.Name}");
-                return;
-            }
-
-            var drift = MathF.Abs(observedPhaseElapsed - phaseElapsed);
-            if (drift <= SyncDriftToleranceSeconds)
-            {
-                continue;
-            }
-
-            CurrentPhaseState = new PhaseState(
-                syncEvent.Phase,
-                now.AddSeconds(-observedPhaseElapsed),
-                $"Synced to {syncEvent.Name}");
-            return;
+            ApplyCastSync(syncEvent, now, battleChara.CurrentCastTime);
+            return true;
         }
+
+        return false;
+    }
+
+    private IEnumerable<IBattleChara> GetVisibleSyncCasts()
+    {
+        foreach (var gameObject in ObjectTable)
+        {
+            if (gameObject is IBattleNpc battleNpc &&
+                battleNpc is IBattleChara battleChara &&
+                battleChara.IsCasting &&
+                battleChara.CastActionId != 0)
+            {
+                yield return battleChara;
+            }
+        }
+    }
+
+    private void ApplyCastSync(DmuTimelineEvent syncEvent, DateTime now, float currentCastTime)
+    {
+        var observedPhaseElapsed = Math.Max(0.0f, syncEvent.PhaseTimeSeconds - currentCastTime);
+        CurrentPhaseState = new PhaseState(
+            syncEvent.Phase,
+            now.AddSeconds(-observedPhaseElapsed),
+            $"Synced to {syncEvent.Name}");
+        castSyncedPhases.Add(syncEvent.Phase);
     }
 
     private void SetPhase(DmuPhase phase, DateTime now, string label)
@@ -816,6 +849,7 @@ public sealed class Plugin : IDalamudPlugin
     private void ResetPhaseState()
     {
         CurrentPhaseState = null;
+        castSyncedPhases.Clear();
     }
 
     private void EnsureSlotList()
