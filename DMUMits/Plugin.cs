@@ -36,6 +36,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly ConfigWindow configWindow;
     private DateTime lastSyncPollAtUtc = DateTime.MinValue;
+    private int? lastPartySignature;
     private bool wasInCombat;
 
     public Configuration Configuration { get; }
@@ -154,6 +155,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void AutoAssignPartySlots()
     {
+        RefreshParty(force: true);
         EnsureSlotList();
         var autoAssignments = PartySlotHelper.AutoAssign(CurrentParty)
             .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberKey))
@@ -274,6 +276,7 @@ public sealed class Plugin : IDalamudPlugin
     private void OnDutyReset(IDutyStateEventArgs args)
     {
         ResetPhaseState();
+        lastPartySignature = null;
         wasInCombat = false;
     }
 
@@ -290,9 +293,52 @@ public sealed class Plugin : IDalamudPlugin
         RefreshPhaseState(now);
     }
 
-    private void RefreshParty()
+    private void RefreshParty(bool force = false)
+    {
+        var signature = BuildPartySignature();
+        if (!force && lastPartySignature == signature)
+        {
+            return;
+        }
+
+        lastPartySignature = signature;
+        RebuildPartySnapshot();
+    }
+
+    private int BuildPartySignature()
+    {
+        var hash = new HashCode();
+        hash.Add(ClientState.TerritoryType);
+        hash.Add(PlayerState.ContentId);
+        hash.Add(PartyList.Length);
+        hash.Add(PartyList.PartyId);
+        hash.Add(PartyList.IsAlliance);
+
+        foreach (var member in PartyList)
+        {
+            hash.Add(member.Name.TextValue, StringComparer.OrdinalIgnoreCase);
+            hash.Add(member.ContentId);
+            hash.Add(member.EntityId);
+            hash.Add(member.ClassJob.RowId);
+        }
+
+        var localPlayer = ObjectTable.LocalPlayer;
+        if (localPlayer is not null)
+        {
+            hash.Add(localPlayer.Name.TextValue, StringComparer.OrdinalIgnoreCase);
+            hash.Add(localPlayer.EntityId);
+            hash.Add(localPlayer.ClassJob.RowId);
+        }
+
+        return hash.ToHashCode();
+    }
+
+    private void RebuildPartySnapshot()
     {
         var members = new List<PartyMemberInfo>();
+        var trackedEntityIds = new HashSet<uint>();
+        var trackedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var localContentId = PlayerState.ContentId;
         var index = 0;
         foreach (var member in PartyList)
         {
@@ -313,8 +359,16 @@ public sealed class Plugin : IDalamudPlugin
                 member.ContentId,
                 member.EntityId,
                 member.ClassJob.RowId));
+            if (member.EntityId != 0)
+            {
+                trackedEntityIds.Add(member.EntityId);
+            }
+
+            trackedNames.Add(name);
             index++;
         }
+
+        AddLocalPlayerIfMissing(members, trackedEntityIds, trackedNames, index, localContentId);
 
         CurrentParty = members;
         ReconcilePartyAssignments();
@@ -325,6 +379,44 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         RefreshLocalSlot();
+    }
+
+    private static void AddLocalPlayerIfMissing(
+        List<PartyMemberInfo> members,
+        HashSet<uint> trackedEntityIds,
+        HashSet<string> trackedNames,
+        int partyIndex,
+        ulong localContentId)
+    {
+        var localPlayer = ObjectTable.LocalPlayer;
+        if (localPlayer is null)
+        {
+            return;
+        }
+
+        var memberName = localPlayer.Name.TextValue;
+        if (string.IsNullOrWhiteSpace(memberName) ||
+            (localPlayer.EntityId != 0 && trackedEntityIds.Contains(localPlayer.EntityId)) ||
+            trackedNames.Contains(memberName))
+        {
+            return;
+        }
+
+        var memberKey = localContentId != 0
+            ? localContentId.ToString("X16")
+            : PartySlotHelper.BuildNameKey(memberName);
+        if (string.IsNullOrWhiteSpace(memberKey))
+        {
+            return;
+        }
+
+        members.Add(new PartyMemberInfo(
+            memberKey,
+            memberName,
+            partyIndex,
+            localContentId,
+            localPlayer.EntityId,
+            localPlayer.ClassJob.RowId));
     }
 
     private void ReconcilePartyAssignments()

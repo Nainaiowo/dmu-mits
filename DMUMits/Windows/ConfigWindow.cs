@@ -48,13 +48,6 @@ public sealed class ConfigWindow : Window, IDisposable
     {
         ImGui.TextUnformatted("Helper window");
         var showWindow = plugin.Configuration.ShowWindow;
-        if (ImGui.Button(showWindow ? "Close helper" : "Open helper"))
-        {
-            plugin.SetShowWindow(!showWindow);
-            showWindow = !showWindow;
-        }
-
-        ImGui.SameLine();
         if (ImGui.Checkbox("Show helper", ref showWindow))
         {
             plugin.SetShowWindow(showWindow);
