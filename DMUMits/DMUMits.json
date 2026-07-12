@@ -4,7 +4,7 @@
   "InternalName": "DMUMits",
   "Punchline": "DMU mitigation timeline helper.",
   "Description": "Shows upcoming dmu mitigation based on fight timeline",
-  "Changelog": "Initial local build.",
+  "Changelog": "Fixed settings window crash, moved helper window controls into settings, and improved pre-instance party setup.",
   "RepoUrl": "https://github.com/Nainaiowo/dmu-mits",
   "ApplicableVersion": "any",
   "Tags": [

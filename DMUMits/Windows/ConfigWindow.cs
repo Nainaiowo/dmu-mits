@@ -46,16 +46,31 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSettings()
     {
-        if (ImGui.Button("Open DMU Mits"))
+        ImGui.TextUnformatted("Helper window");
+        var showWindow = plugin.Configuration.ShowWindow;
+        if (ImGui.Button(showWindow ? "Close helper" : "Open helper"))
         {
-            plugin.OpenMainWindow();
+            plugin.SetShowWindow(!showWindow);
+            showWindow = !showWindow;
         }
 
-        var showWindow = plugin.Configuration.ShowWindow;
-        if (ImGui.Checkbox("Show window", ref showWindow))
+        ImGui.SameLine();
+        if (ImGui.Checkbox("Show helper", ref showWindow))
         {
             plugin.SetShowWindow(showWindow);
         }
+
+        var lockHelper = plugin.Configuration.LockHelperWindow;
+        if (ImGui.Checkbox("Lock helper window", ref lockHelper))
+        {
+            plugin.SetHelperWindowLocked(lockHelper);
+        }
+
+        ImGui.TextDisabled(lockHelper
+            ? "Unlock to move or resize the helper window."
+            : "Move and resize the helper window, then lock it here.");
+
+        ImGui.Separator();
 
         var preview = plugin.Configuration.PreviewWhenInactive;
         if (ImGui.Checkbox("Preview when inactive", ref preview))
@@ -64,7 +79,7 @@ public sealed class ConfigWindow : Window, IDisposable
         }
 
         var opacity = plugin.Configuration.WindowOpacity;
-        if (ImGui.SliderFloat("Window opacity", ref opacity, 0.2f, 1.0f, "%.2f"))
+        if (ImGui.SliderFloat("Window opacity", ref opacity, 0.0f, 1.0f, "%.2f"))
         {
             plugin.SetWindowOpacity(opacity);
         }
@@ -100,7 +115,7 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.AutoAssignPartySlots();
         }
 
-        ImGui.TextDisabled("Drag players between slots or use the dropdowns.");
+        ImGui.TextDisabled("Works outside DMU. Saved players stay assigned if they leave party.");
 
         if (!ImGui.BeginTable("##DMUMitsPartySlots", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
         {
@@ -111,7 +126,7 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.TableSetupColumn("Player");
         ImGui.TableHeadersRow();
 
-        foreach (var assignment in plugin.Configuration.PartySlots)
+        foreach (var assignment in plugin.Configuration.PartySlots.Where(assignment => assignment is not null))
         {
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -123,8 +138,13 @@ public sealed class ConfigWindow : Window, IDisposable
         ImGui.EndTable();
     }
 
-    private unsafe void DrawSlotAssignment(PartySlotAssignment assignment)
+    private unsafe void DrawSlotAssignment(PartySlotAssignment? assignment)
     {
+        if (assignment is null)
+        {
+            return;
+        }
+
         var selectedName = string.IsNullOrWhiteSpace(assignment.MemberName) ? "(empty)" : assignment.MemberName;
         ImGui.SetNextItemWidth(-1.0f);
         if (ImGui.BeginCombo($"##slot-{assignment.Slot}", selectedName))
@@ -136,7 +156,12 @@ public sealed class ConfigWindow : Window, IDisposable
 
             foreach (var member in plugin.CurrentParty)
             {
-                var selected = string.Equals(member.Key, assignment.MemberKey, StringComparison.Ordinal);
+                if (member is null)
+                {
+                    continue;
+                }
+
+                var selected = PartySlotHelper.AssignmentMatchesMember(assignment, member);
                 if (ImGui.Selectable(member.Name, selected))
                 {
                     plugin.AssignSlot(assignment.Slot, member);
@@ -173,8 +198,8 @@ public sealed class ConfigWindow : Window, IDisposable
             return;
         }
 
-        var source = plugin.Configuration.PartySlots.FirstOrDefault(slot => slot.Slot == sourceSlot);
-        var target = plugin.Configuration.PartySlots.FirstOrDefault(slot => slot.Slot == targetSlot);
+        var source = plugin.Configuration.PartySlots.FirstOrDefault(slot => slot is not null && slot.Slot == sourceSlot);
+        var target = plugin.Configuration.PartySlots.FirstOrDefault(slot => slot is not null && slot.Slot == targetSlot);
         if (source is null || target is null)
         {
             return;

@@ -6,6 +6,7 @@ namespace DMUMits;
 
 public static class PartySlotHelper
 {
+    public const string NameKeyPrefix = "Name:";
     private static readonly uint[] TankJobs = [19, 21, 32, 37];
     private static readonly uint[] HealerJobs = [24, 28, 33, 40];
     private static readonly uint[] MeleeJobs = [20, 22, 30, 34, 39, 41];
@@ -107,8 +108,59 @@ public static class PartySlotHelper
             return null;
         }
 
-        var assignment = assignments.FirstOrDefault(candidate => string.Equals(candidate.MemberKey, member.Key, StringComparison.Ordinal));
+        var assignment = assignments.FirstOrDefault(candidate => AssignmentMatchesMember(candidate, member));
         return assignment?.Slot ?? GetDefaultSlotForJob(member.ClassJobId);
+    }
+
+    public static bool AssignmentMatchesMember(PartySlotAssignment? assignment, PartyMemberInfo? member)
+    {
+        if (assignment is null || member is null)
+        {
+            return false;
+        }
+
+        return AssignmentMatchesMemberIdentity(assignment, member.Key, member.Name);
+    }
+
+    public static bool AssignmentMatchesMemberIdentity(PartySlotAssignment? assignment, string memberKey, string memberName)
+    {
+        if (assignment is null)
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(assignment.MemberKey) &&
+            string.Equals(assignment.MemberKey, memberKey, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (!ShouldUseNameFallback(assignment.MemberKey, memberKey))
+        {
+            return false;
+        }
+
+        return !string.IsNullOrWhiteSpace(assignment.MemberName) &&
+            !string.IsNullOrWhiteSpace(memberName) &&
+            string.Equals(NormalizeMemberName(assignment.MemberName), NormalizeMemberName(memberName), StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static string NormalizeMemberName(string name)
+    {
+        return name.Trim();
+    }
+
+    public static string BuildNameKey(string name)
+    {
+        var normalizedName = NormalizeMemberName(name);
+        return string.IsNullOrWhiteSpace(normalizedName) ? string.Empty : $"{NameKeyPrefix}{normalizedName}";
+    }
+
+    private static bool ShouldUseNameFallback(string assignmentKey, string memberKey)
+    {
+        return string.IsNullOrWhiteSpace(assignmentKey) ||
+            assignmentKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal) ||
+            memberKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal);
     }
 
     public static PartySlot? GetDefaultSlotForJob(uint classJobId)

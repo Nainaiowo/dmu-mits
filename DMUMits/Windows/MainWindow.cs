@@ -23,15 +23,25 @@ public sealed class MainWindow : Window, IDisposable
         this.plugin = plugin;
         Size = new Vector2(360, 300);
         SizeCondition = ImGuiCond.FirstUseEver;
+        RespectCloseHotkey = false;
     }
 
     public void Dispose()
     {
     }
 
+    public override void PreDraw()
+    {
+        Flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse;
+        if (plugin.Configuration.LockHelperWindow)
+        {
+            Flags |= ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize;
+        }
+    }
+
     public override void Draw()
     {
-        BgAlpha = Math.Clamp(plugin.Configuration.WindowOpacity, 0.2f, 1.0f);
+        BgAlpha = Math.Clamp(plugin.Configuration.WindowOpacity, 0.0f, 1.0f);
         ImGui.SetWindowFontScale(Math.Clamp(plugin.Configuration.FontScale, 0.75f, 1.75f));
 
         var now = DateTime.UtcNow;

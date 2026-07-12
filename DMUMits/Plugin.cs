@@ -66,15 +66,15 @@ public sealed class Plugin : IDalamudPlugin
 
         CommandManager.AddHandler(MainCommandName, new CommandInfo(OnMainCommand)
         {
-            HelpMessage = "Open DMU Mits.",
+            HelpMessage = "Open DMU Mits settings.",
         });
         CommandManager.AddHandler(ShortCommandName, new CommandInfo(OnMainCommand)
         {
-            HelpMessage = "Open DMU Mits.",
+            HelpMessage = "Open DMU Mits settings.",
         });
 
         PluginInterface.UiBuilder.Draw += windowSystem.Draw;
-        PluginInterface.UiBuilder.OpenMainUi += ToggleMainWindow;
+        PluginInterface.UiBuilder.OpenMainUi += ToggleConfigWindow;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleConfigWindow;
         Framework.Update += OnFrameworkUpdate;
         DutyState.DutyStarted += OnDutyReset;
@@ -89,7 +89,7 @@ public sealed class Plugin : IDalamudPlugin
         DutyState.DutyStarted -= OnDutyReset;
         Framework.Update -= OnFrameworkUpdate;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleConfigWindow;
-        PluginInterface.UiBuilder.OpenMainUi -= ToggleMainWindow;
+        PluginInterface.UiBuilder.OpenMainUi -= ToggleConfigWindow;
         PluginInterface.UiBuilder.Draw -= windowSystem.Draw;
         CommandManager.RemoveHandler(ShortCommandName);
         CommandManager.RemoveHandler(MainCommandName);
@@ -98,17 +98,9 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow.Dispose();
     }
 
-    public void ToggleMainWindow()
+    public void SetHelperWindowLocked(bool locked)
     {
-        mainWindow.Toggle();
-        Configuration.ShowWindow = mainWindow.IsOpen;
-        SaveConfiguration();
-    }
-
-    public void OpenMainWindow()
-    {
-        Configuration.ShowWindow = true;
-        mainWindow.IsOpen = true;
+        Configuration.LockHelperWindow = locked;
         SaveConfiguration();
     }
 
@@ -138,7 +130,7 @@ public sealed class Plugin : IDalamudPlugin
 
     public void SetWindowOpacity(float value)
     {
-        Configuration.WindowOpacity = Math.Clamp(value, 0.2f, 1.0f);
+        Configuration.WindowOpacity = Math.Clamp(value, 0.0f, 1.0f);
         SaveConfiguration();
     }
 
@@ -162,7 +154,27 @@ public sealed class Plugin : IDalamudPlugin
 
     public void AutoAssignPartySlots()
     {
-        Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
+        EnsureSlotList();
+        var autoAssignments = PartySlotHelper.AutoAssign(CurrentParty)
+            .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberKey))
+            .ToList();
+
+        foreach (var autoAssignment in autoAssignments)
+        {
+            ClearMatchingAssignments(autoAssignment.MemberKey, autoAssignment.MemberName);
+        }
+
+        foreach (var autoAssignment in autoAssignments)
+        {
+            var target = Configuration.PartySlots.FirstOrDefault(assignment => assignment.Slot == autoAssignment.Slot);
+            if (target is null)
+            {
+                continue;
+            }
+
+            CopyAssignment(target, autoAssignment);
+        }
+
         RefreshLocalSlot();
         SaveConfiguration();
     }
@@ -181,11 +193,9 @@ public sealed class Plugin : IDalamudPlugin
         {
             foreach (var other in Configuration.PartySlots.Where(slot =>
                 slot.Slot != assignment.Slot &&
-                string.Equals(slot.MemberKey, member.Key, StringComparison.Ordinal)))
+                PartySlotHelper.AssignmentMatchesMember(slot, member)))
             {
-                other.MemberKey = string.Empty;
-                other.MemberName = string.Empty;
-                other.ClassJobId = 0;
+                ClearAssignment(other);
             }
 
             assignment.MemberKey = member.Key;
@@ -258,13 +268,7 @@ public sealed class Plugin : IDalamudPlugin
 
     private void OnMainCommand(string command, string args)
     {
-        if (args.Trim().Equals("config", StringComparison.OrdinalIgnoreCase))
-        {
-            ToggleConfigWindow();
-            return;
-        }
-
-        ToggleMainWindow();
+        ToggleConfigWindow();
     }
 
     private void OnDutyReset(IDutyStateEventArgs args)
@@ -301,7 +305,7 @@ public sealed class Plugin : IDalamudPlugin
 
             var key = member.ContentId != 0
                 ? member.ContentId.ToString("X16")
-                : $"{name}:{index}";
+                : PartySlotHelper.BuildNameKey(name);
             members.Add(new PartyMemberInfo(
                 key,
                 name,
@@ -313,6 +317,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         CurrentParty = members;
+        ReconcilePartyAssignments();
         if (Configuration.PartySlots.All(slot => string.IsNullOrWhiteSpace(slot.MemberKey)) && CurrentParty.Count > 0)
         {
             Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
@@ -320,6 +325,77 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         RefreshLocalSlot();
+    }
+
+    private void ReconcilePartyAssignments()
+    {
+        var changed = false;
+        foreach (var assignment in Configuration.PartySlots.Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberName)))
+        {
+            var matchingMember = CurrentParty.FirstOrDefault(member =>
+                !string.IsNullOrWhiteSpace(assignment.MemberKey) &&
+                string.Equals(assignment.MemberKey, member.Key, StringComparison.Ordinal)) ??
+                FindUniqueCurrentPartyMemberByName(assignment.MemberName);
+            if (matchingMember is null)
+            {
+                continue;
+            }
+
+            if (!string.Equals(assignment.MemberKey, matchingMember.Key, StringComparison.Ordinal) ||
+                !string.Equals(assignment.MemberName, matchingMember.Name, StringComparison.Ordinal) ||
+                assignment.ClassJobId != matchingMember.ClassJobId)
+            {
+                assignment.MemberKey = matchingMember.Key;
+                assignment.MemberName = matchingMember.Name;
+                assignment.ClassJobId = matchingMember.ClassJobId;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            SaveConfiguration();
+        }
+    }
+
+    private PartyMemberInfo? FindUniqueCurrentPartyMemberByName(string memberName)
+    {
+        var normalizedName = PartySlotHelper.NormalizeMemberName(memberName);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            return null;
+        }
+
+        var matches = CurrentParty
+            .Where(member => string.Equals(PartySlotHelper.NormalizeMemberName(member.Name), normalizedName, StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+        return matches.Count == 1 ? matches[0] : null;
+    }
+
+    private void ClearMatchingAssignments(string memberKey, string memberName)
+    {
+        foreach (var assignment in Configuration.PartySlots)
+        {
+            if (PartySlotHelper.AssignmentMatchesMemberIdentity(assignment, memberKey, memberName))
+            {
+                ClearAssignment(assignment);
+            }
+        }
+    }
+
+    private static void CopyAssignment(PartySlotAssignment target, PartySlotAssignment source)
+    {
+        target.MemberKey = source.MemberKey;
+        target.MemberName = source.MemberName;
+        target.ClassJobId = source.ClassJobId;
+    }
+
+    private static void ClearAssignment(PartySlotAssignment assignment)
+    {
+        assignment.MemberKey = string.Empty;
+        assignment.MemberName = string.Empty;
+        assignment.ClassJobId = 0;
     }
 
     private void RefreshLocalSlot()
@@ -497,6 +573,15 @@ public sealed class Plugin : IDalamudPlugin
 
     private void EnsureSlotList()
     {
+        var orderedSlots = PartySlotHelper.OrderedSlots;
+        var configuredSlots = Configuration.PartySlots ?? [];
+        Configuration.PartySlots = configuredSlots
+            .OfType<PartySlotAssignment>()
+            .Where(entry => orderedSlots.Contains(entry.Slot))
+            .GroupBy(entry => entry.Slot)
+            .Select(group => group.First())
+            .ToList();
+
         foreach (var slot in PartySlotHelper.OrderedSlots)
         {
             if (Configuration.PartySlots.All(entry => entry.Slot != slot))
@@ -506,7 +591,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         Configuration.PartySlots = Configuration.PartySlots
-            .Where(entry => PartySlotHelper.OrderedSlots.Contains(entry.Slot))
+            .Where(entry => orderedSlots.Contains(entry.Slot))
             .OrderBy(entry => GetSlotOrder(entry.Slot))
             .ToList();
     }

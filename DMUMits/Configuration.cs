@@ -11,6 +11,8 @@ public sealed class Configuration : IPluginConfiguration
 
     public bool ShowWindow { get; set; } = true;
 
+    public bool LockHelperWindow { get; set; }
+
     public bool PreviewWhenInactive { get; set; } = true;
 
     public float WindowOpacity { get; set; } = 0.92f;
