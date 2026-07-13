@@ -29,9 +29,12 @@ public enum PartySlot
 
 public enum TimelineTimingSource
 {
-    LocalTimeline,
-    FFLogsTimeline,
-    SheetFallback,
+    ActTimeline,
+}
+
+public enum DmuTimelineSyncKind
+{
+    CastStart,
 }
 
 public sealed record DmuTimelineEvent(
@@ -54,6 +57,13 @@ public sealed record DmuTimelineEvent(
         return Mitigations.TryGetValue(slot, out var mitigation) ? mitigation : string.Empty;
     }
 }
+
+public sealed record DmuTimelineSyncPoint(
+    DmuPhase Phase,
+    float PhaseTimeSeconds,
+    uint ActionId,
+    string Label,
+    DmuTimelineSyncKind Kind = DmuTimelineSyncKind.CastStart);
 
 public sealed record UpcomingMitigationEvent(
     DmuTimelineEvent Event,

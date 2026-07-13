@@ -21,6 +21,12 @@ public sealed class Plugin : IDalamudPlugin
     private static readonly TimeSpan SyncPollInterval = TimeSpan.FromSeconds(1);
     private const float PreviewLeadInSeconds = 14.0f;
     private const float PreviewLoopPaddingSeconds = 12.0f;
+    private const uint P2WingsOfDestructionLeftActionId = 47821;
+    private const uint P2WingsOfDestructionRightActionId = 47822;
+    private const uint P2WingsOfDestructionBusterCastActionId = 50311;
+    private const uint P2UltimateEmbraceActionId = 49740;
+    private const float P2UltimateEmbraceCastSeconds = 5.0f;
+    private const float P3TargetableAfterFinalP2EmbraceSeconds = 50.3f;
 
     [PluginService] internal static IDalamudPluginInterface PluginInterface { get; private set; } = null!;
     [PluginService] internal static ICommandManager CommandManager { get; private set; } = null!;
@@ -41,6 +47,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly HashSet<DmuPhase> castSyncedPhases = [];
     private DateTime lastSyncPollAtUtc = DateTime.MinValue;
     private int? lastPartySignature;
+    private DateTime? pendingP3StartAtUtc;
+    private bool sawLateP2Wings;
     private bool wasInCombat;
 
     public Configuration Configuration { get; }
@@ -226,11 +234,11 @@ public sealed class Plugin : IDalamudPlugin
         if (CurrentPhaseState is null)
         {
             return Configuration.PreviewWhenInactive
-                ? GetPreviewUpcomingEvents(now)
+                ? GetPreviewUpcomingEvents(now, 8)
                 : [];
         }
 
-        return GetLiveUpcomingEvents(now);
+        return GetLiveUpcomingEvents(now, 8);
     }
 
     public float GetPreviewElapsedSeconds(DateTime now)
@@ -248,13 +256,13 @@ public sealed class Plugin : IDalamudPlugin
         return loopStart + elapsedInLoop;
     }
 
-    private IReadOnlyList<UpcomingMitigationEvent> GetLiveUpcomingEvents(DateTime now)
+    private IReadOnlyList<UpcomingMitigationEvent> GetLiveUpcomingEvents(DateTime now, int takeCount)
     {
         var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
         var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
         var slot = LocalSlot;
         var events = DmuMitigationData.GetEventsForPhase(phase);
-        return MarkNextMitigation(events
+        var upcoming = events
             .Where(entry => entry.PhaseTimeSeconds >= phaseElapsed - 2.0f)
             .Select(entry => new UpcomingMitigationEvent(
                 entry,
@@ -263,12 +271,13 @@ public sealed class Plugin : IDalamudPlugin
                 false))
             .Where(entry => entry.SecondsRemaining <= Configuration.LookAheadSeconds)
             .OrderBy(entry => entry.SecondsRemaining)
-            .Take(8)
-            .ToList(),
-            slot);
+            .ToList();
+        return MarkNextMitigation(upcoming, slot)
+            .Take(takeCount)
+            .ToList();
     }
 
-    private IReadOnlyList<UpcomingMitigationEvent> GetPreviewUpcomingEvents(DateTime now)
+    private IReadOnlyList<UpcomingMitigationEvent> GetPreviewUpcomingEvents(DateTime now, int takeCount)
     {
         var events = DmuMitigationData.GetEventsForPhase(DmuPhase.P1);
         if (events.Count == 0)
@@ -282,7 +291,7 @@ public sealed class Plugin : IDalamudPlugin
         var phaseElapsed = GetPreviewElapsedSeconds(now);
         var loopLength = GetPreviewLoopLength(events, loopStart);
 
-        return MarkNextMitigation(events
+        var upcoming = events
             .Select(entry =>
             {
                 var secondsRemaining = entry.PhaseTimeSeconds - phaseElapsed;
@@ -298,9 +307,10 @@ public sealed class Plugin : IDalamudPlugin
                     false);
             })
             .OrderBy(entry => entry.SecondsRemaining)
-            .Take(8)
-            .ToList(),
-            slot);
+            .ToList();
+        return MarkNextMitigation(upcoming, slot)
+            .Take(takeCount)
+            .ToList();
     }
 
     private IReadOnlyList<UpcomingMitigationEvent> MarkNextMitigation(
@@ -382,7 +392,9 @@ public sealed class Plugin : IDalamudPlugin
 
     private UpcomingMitigationEvent? GetHighlightedMitigationEvent(DateTime now, PartySlot slot)
     {
-        var upcoming = GetUpcomingEvents(now);
+        var upcoming = CurrentPhaseState is null
+            ? Configuration.PreviewWhenInactive ? GetPreviewUpcomingEvents(now, int.MaxValue) : []
+            : GetLiveUpcomingEvents(now, int.MaxValue);
         return upcoming.FirstOrDefault(entry => entry.IsUseNow && entry.Event.HasMitigationFor(slot)) ??
             upcoming.FirstOrDefault(entry => entry.Event.HasMitigationFor(slot));
     }
@@ -665,12 +677,19 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var inCombat = IsInCombat;
-        if (inCombat && !wasInCombat)
+        if (inCombat && !wasInCombat && CurrentPhaseState is null)
         {
             castSyncedPhases.Clear();
+            ClearP2ToP3TransitionState();
             SetPhase(DmuPhase.P1, now, "Combat start");
         }
         wasInCombat = inCombat;
+
+        TrackP2ToP3Transition(now);
+        if (TryStartScheduledP3(now))
+        {
+            return;
+        }
 
         if (!inCombat && CurrentPhaseState is not null)
         {
@@ -678,6 +697,13 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         if (TrySyncForwardPhaseFromVisibleCasts(now))
+        {
+            return;
+        }
+
+        if (CurrentPhaseState?.Phase == DmuPhase.P2 &&
+            pendingP3StartAtUtc is { } scheduledP3Start &&
+            now < scheduledP3Start)
         {
             return;
         }
@@ -750,6 +776,51 @@ public sealed class Plugin : IDalamudPlugin
         return sawP3Boss ? DmuPhase.P3 : DmuPhase.Unknown;
     }
 
+    private void TrackP2ToP3Transition(DateTime now)
+    {
+        if (CurrentPhaseState?.Phase != DmuPhase.P2 || pendingP3StartAtUtc is not null)
+        {
+            return;
+        }
+
+        foreach (var battleChara in GetVisibleSyncCasts())
+        {
+            if (IsLateP2WingsAction(battleChara.CastActionId))
+            {
+                sawLateP2Wings = true;
+                continue;
+            }
+
+            if (!sawLateP2Wings || battleChara.CastActionId != P2UltimateEmbraceActionId)
+            {
+                continue;
+            }
+
+            var secondsUntilEmbraceResolves = Math.Max(0.0f, P2UltimateEmbraceCastSeconds - battleChara.CurrentCastTime);
+            pendingP3StartAtUtc = now.AddSeconds(secondsUntilEmbraceResolves + P3TargetableAfterFinalP2EmbraceSeconds);
+            return;
+        }
+    }
+
+    private bool TryStartScheduledP3(DateTime now)
+    {
+        if (pendingP3StartAtUtc is not { } startedAt || now < startedAt)
+        {
+            return false;
+        }
+
+        CurrentPhaseState = new PhaseState(DmuPhase.P3, startedAt, "Synced from final Ultimate Embrace");
+        ClearP2ToP3TransitionState();
+        return true;
+    }
+
+    private static bool IsLateP2WingsAction(uint actionId)
+    {
+        return actionId is P2WingsOfDestructionLeftActionId
+            or P2WingsOfDestructionRightActionId
+            or P2WingsOfDestructionBusterCastActionId;
+    }
+
     private bool CurrentPartyHasAnyStatus(params uint[] statusIds)
     {
         var statusSet = statusIds.ToHashSet();
@@ -779,14 +850,14 @@ public sealed class Plugin : IDalamudPlugin
 
         foreach (var battleChara in GetVisibleSyncCasts())
         {
-            var syncEvent = DmuMitigationData.FindForwardSyncEvent(searchPhase, battleChara.CastActionId);
-            if (syncEvent is null ||
-                CurrentPhaseState is not null && syncEvent.Phase <= CurrentPhaseState.Phase)
+            var syncPoint = DmuMitigationData.FindForwardSyncPoint(searchPhase, battleChara.CastActionId);
+            if (syncPoint is null ||
+                CurrentPhaseState is not null && syncPoint.Phase <= CurrentPhaseState.Phase)
             {
                 continue;
             }
 
-            ApplyCastSync(syncEvent, now, battleChara.CurrentCastTime);
+            ApplyCastSync(syncPoint, now, battleChara.CurrentCastTime);
             return true;
         }
 
@@ -804,13 +875,13 @@ public sealed class Plugin : IDalamudPlugin
         var phaseElapsed = CurrentPhaseState.ElapsedSeconds(now);
         foreach (var battleChara in GetVisibleSyncCasts())
         {
-            var syncEvent = DmuMitigationData.FindSyncEvent(phase, battleChara.CastActionId, phaseElapsed);
-            if (syncEvent is null)
+            var syncPoint = DmuMitigationData.FindSyncPoint(phase, battleChara.CastActionId, phaseElapsed);
+            if (syncPoint is null)
             {
                 continue;
             }
 
-            ApplyCastSync(syncEvent, now, battleChara.CurrentCastTime);
+            ApplyCastSync(syncPoint, now, battleChara.CurrentCastTime);
             return true;
         }
 
@@ -831,25 +902,40 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
-    private void ApplyCastSync(DmuTimelineEvent syncEvent, DateTime now, float currentCastTime)
+    private void ApplyCastSync(DmuTimelineSyncPoint syncPoint, DateTime now, float currentCastTime)
     {
-        var observedPhaseElapsed = Math.Max(0.0f, syncEvent.PhaseTimeSeconds - currentCastTime);
+        var observedPhaseElapsed = syncPoint.Kind switch
+        {
+            DmuTimelineSyncKind.CastStart => syncPoint.PhaseTimeSeconds + Math.Max(0.0f, currentCastTime),
+            _ => syncPoint.PhaseTimeSeconds,
+        };
         CurrentPhaseState = new PhaseState(
-            syncEvent.Phase,
+            syncPoint.Phase,
             now.AddSeconds(-observedPhaseElapsed),
-            $"Synced to {syncEvent.Name}");
-        castSyncedPhases.Add(syncEvent.Phase);
+            $"Synced to {syncPoint.Label}");
+        castSyncedPhases.Add(syncPoint.Phase);
     }
 
     private void SetPhase(DmuPhase phase, DateTime now, string label)
     {
         CurrentPhaseState = new PhaseState(phase, now, label);
+        if (phase != DmuPhase.P2)
+        {
+            ClearP2ToP3TransitionState();
+        }
     }
 
     private void ResetPhaseState()
     {
         CurrentPhaseState = null;
         castSyncedPhases.Clear();
+        ClearP2ToP3TransitionState();
+    }
+
+    private void ClearP2ToP3TransitionState()
+    {
+        pendingP3StartAtUtc = null;
+        sawLateP2Wings = false;
     }
 
     private void EnsureSlotList()

@@ -8,6 +8,7 @@ namespace DMUMits;
 public static partial class DmuMitigationData
 {
     public const uint DmuTerritoryId = 1363;
+    private const float SamePhaseSyncToleranceSeconds = 30.0f;
 
     private static readonly Regex MitigationNotePattern = new(@"\s*(?:\((\d+)\)|([⁰¹²³⁴⁵⁶⁷⁸⁹]+))", RegexOptions.Compiled);
 
@@ -74,18 +75,25 @@ public static partial class DmuMitigationData
             .ToList();
     }
 
-    public static DmuTimelineEvent? FindSyncEvent(DmuPhase phase, uint actionId, float phaseElapsedSeconds)
+    public static DmuTimelineSyncPoint? FindSyncPoint(DmuPhase phase, uint actionId, float phaseElapsedSeconds)
     {
-        return Events
-            .Where(entry => entry.Phase == phase && entry.SyncActionIds.Contains(actionId))
-            .OrderBy(entry => MathF.Abs(entry.PhaseTimeSeconds - phaseElapsedSeconds))
+        return SyncPoints
+            .Where(entry => entry.Phase == phase && entry.ActionId == actionId)
+            .Select(entry => new
+            {
+                SyncPoint = entry,
+                Difference = MathF.Abs(entry.PhaseTimeSeconds - phaseElapsedSeconds),
+            })
+            .Where(entry => entry.Difference <= SamePhaseSyncToleranceSeconds)
+            .OrderBy(entry => entry.Difference)
+            .Select(entry => entry.SyncPoint)
             .FirstOrDefault();
     }
 
-    public static DmuTimelineEvent? FindForwardSyncEvent(DmuPhase currentPhase, uint actionId)
+    public static DmuTimelineSyncPoint? FindForwardSyncPoint(DmuPhase currentPhase, uint actionId)
     {
-        return Events
-            .Where(entry => entry.Phase >= currentPhase && entry.SyncActionIds.Contains(actionId))
+        return SyncPoints
+            .Where(entry => entry.Phase >= currentPhase && entry.ActionId == actionId)
             .OrderBy(entry => entry.Phase)
             .ThenBy(entry => entry.PhaseTimeSeconds)
             .FirstOrDefault();
