@@ -122,7 +122,7 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.AutoAssignPartySlots();
         }
 
-        ImGui.TextDisabled("Works outside DMU. Saved players stay assigned if they leave party.");
+        ImGui.TextDisabled("Works outside DMU. Current party members fill empty slots automatically.");
 
         if (!ImGui.BeginTable("##DMUMitsPartySlots", 2, ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
         {

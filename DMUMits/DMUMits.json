@@ -4,7 +4,7 @@
   "InternalName": "DMUMits",
   "Punchline": "DMU mitigation timeline helper.",
   "Description": "Shows upcoming dmu mitigation based on fight timeline",
-  "Changelog": "Added ACT/cactbot timeline mechanics with mitigation-linked callouts.",
+  "Changelog": "Fixed party slot refresh when the party changes.",
   "RepoUrl": "https://github.com/Nainaiowo/dmu-mits",
   "ApplicableVersion": "any",
   "Tags": [

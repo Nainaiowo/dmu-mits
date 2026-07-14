@@ -177,26 +177,8 @@ public sealed class Plugin : IDalamudPlugin
     {
         RefreshParty(force: true);
         EnsureSlotList();
-        var autoAssignments = PartySlotHelper.AutoAssign(CurrentParty)
-            .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberKey))
-            .ToList();
-
-        foreach (var autoAssignment in autoAssignments)
-        {
-            ClearMatchingAssignments(autoAssignment.MemberKey, autoAssignment.MemberName);
-        }
-
-        foreach (var autoAssignment in autoAssignments)
-        {
-            var target = Configuration.PartySlots.FirstOrDefault(assignment => assignment.Slot == autoAssignment.Slot);
-            if (target is null)
-            {
-                continue;
-            }
-
-            CopyAssignment(target, autoAssignment);
-        }
-
+        Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
+        EnsureSlotList();
         RefreshLocalSlot();
         SaveConfiguration();
     }
@@ -502,10 +484,10 @@ public sealed class Plugin : IDalamudPlugin
         AddLocalPlayerIfMissing(members, trackedEntityIds, trackedNames, index, localContentId);
 
         CurrentParty = members;
-        ReconcilePartyAssignments();
-        if (Configuration.PartySlots.All(slot => string.IsNullOrWhiteSpace(slot.MemberKey)) && CurrentParty.Count > 0)
+        var changed = ReconcilePartyAssignments();
+        changed |= FillOpenPartySlotsFromCurrentParty();
+        if (changed)
         {
-            Configuration.PartySlots = PartySlotHelper.AutoAssign(CurrentParty).ToList();
             SaveConfiguration();
         }
 
@@ -550,19 +532,23 @@ public sealed class Plugin : IDalamudPlugin
             localPlayer.ClassJob.RowId));
     }
 
-    private void ReconcilePartyAssignments()
+    private bool ReconcilePartyAssignments()
     {
         var changed = false;
+        if (CurrentParty.Count == 0)
+        {
+            return false;
+        }
+
         foreach (var assignment in Configuration.PartySlots
             .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberName))
             .ToList())
         {
-            var matchingMember = CurrentParty.FirstOrDefault(member =>
-                !string.IsNullOrWhiteSpace(assignment.MemberKey) &&
-                string.Equals(assignment.MemberKey, member.Key, StringComparison.Ordinal)) ??
-                FindUniqueCurrentPartyMemberByName(assignment.MemberName);
+            var matchingMember = FindCurrentPartyMemberForAssignment(assignment);
             if (matchingMember is null)
             {
+                ClearAssignment(assignment);
+                changed = true;
                 continue;
             }
 
@@ -583,10 +569,105 @@ public sealed class Plugin : IDalamudPlugin
             }
         }
 
-        if (changed)
+        changed |= ClearDuplicatePartyAssignments();
+        return changed;
+    }
+
+    private bool FillOpenPartySlotsFromCurrentParty()
+    {
+        if (CurrentParty.Count == 0)
         {
-            SaveConfiguration();
+            return false;
         }
+
+        var changed = false;
+        var assignedKeys = GetAssignedCurrentMemberKeys();
+        foreach (var autoAssignment in PartySlotHelper.AutoAssign(CurrentParty)
+            .Where(assignment => !string.IsNullOrWhiteSpace(assignment.MemberKey)))
+        {
+            if (assignedKeys.Contains(autoAssignment.MemberKey))
+            {
+                continue;
+            }
+
+            var target = Configuration.PartySlots.FirstOrDefault(assignment => assignment.Slot == autoAssignment.Slot);
+            if (target is null || !IsAssignmentEmpty(target))
+            {
+                continue;
+            }
+
+            CopyAssignment(target, autoAssignment);
+            assignedKeys.Add(autoAssignment.MemberKey);
+            changed = true;
+        }
+
+        foreach (var member in CurrentParty.Where(member => !assignedKeys.Contains(member.Key)))
+        {
+            var target = PartySlotHelper.GetPreferredSlotsForMember(member)
+                .Select(slot => Configuration.PartySlots.FirstOrDefault(assignment => assignment.Slot == slot))
+                .FirstOrDefault(assignment => assignment is not null && IsAssignmentEmpty(assignment)) ??
+                Configuration.PartySlots.FirstOrDefault(IsAssignmentEmpty);
+            if (target is null)
+            {
+                break;
+            }
+
+            target.MemberKey = member.Key;
+            target.MemberName = member.Name;
+            target.ClassJobId = member.ClassJobId;
+            assignedKeys.Add(member.Key);
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private bool ClearDuplicatePartyAssignments()
+    {
+        var changed = false;
+        var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var assignment in Configuration.PartySlots
+            .Where(assignment => !IsAssignmentEmpty(assignment))
+            .ToList())
+        {
+            var matchingMember = FindCurrentPartyMemberForAssignment(assignment);
+            if (matchingMember is null)
+            {
+                ClearAssignment(assignment);
+                changed = true;
+                continue;
+            }
+
+            if (seenKeys.Add(matchingMember.Key))
+            {
+                continue;
+            }
+
+            ClearAssignment(assignment);
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private HashSet<string> GetAssignedCurrentMemberKeys()
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var assignment in Configuration.PartySlots.Where(assignment => !IsAssignmentEmpty(assignment)))
+        {
+            var member = FindCurrentPartyMemberForAssignment(assignment);
+            if (member is not null)
+            {
+                keys.Add(member.Key);
+            }
+        }
+
+        return keys;
+    }
+
+    private PartyMemberInfo? FindCurrentPartyMemberForAssignment(PartySlotAssignment assignment)
+    {
+        return CurrentParty.FirstOrDefault(member => PartySlotHelper.AssignmentMatchesMember(assignment, member));
     }
 
     private bool TryMoveAssignmentToDefaultSlot(PartySlotAssignment assignment, PartyMemberInfo member)
@@ -617,32 +698,6 @@ public sealed class Plugin : IDalamudPlugin
         return true;
     }
 
-    private PartyMemberInfo? FindUniqueCurrentPartyMemberByName(string memberName)
-    {
-        var normalizedName = PartySlotHelper.NormalizeMemberName(memberName);
-        if (string.IsNullOrWhiteSpace(normalizedName))
-        {
-            return null;
-        }
-
-        var matches = CurrentParty
-            .Where(member => string.Equals(PartySlotHelper.NormalizeMemberName(member.Name), normalizedName, StringComparison.OrdinalIgnoreCase))
-            .Take(2)
-            .ToList();
-        return matches.Count == 1 ? matches[0] : null;
-    }
-
-    private void ClearMatchingAssignments(string memberKey, string memberName)
-    {
-        foreach (var assignment in Configuration.PartySlots)
-        {
-            if (PartySlotHelper.AssignmentMatchesMemberIdentity(assignment, memberKey, memberName))
-            {
-                ClearAssignment(assignment);
-            }
-        }
-    }
-
     private static void CopyAssignment(PartySlotAssignment target, PartySlotAssignment source)
     {
         target.MemberKey = source.MemberKey;
@@ -655,6 +710,12 @@ public sealed class Plugin : IDalamudPlugin
         assignment.MemberKey = string.Empty;
         assignment.MemberName = string.Empty;
         assignment.ClassJobId = 0;
+    }
+
+    private static bool IsAssignmentEmpty(PartySlotAssignment assignment)
+    {
+        return string.IsNullOrWhiteSpace(assignment.MemberKey) &&
+            string.IsNullOrWhiteSpace(assignment.MemberName);
     }
 
     private void RefreshLocalSlot()

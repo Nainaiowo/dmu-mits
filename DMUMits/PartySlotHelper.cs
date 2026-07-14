@@ -179,6 +179,47 @@ public static class PartySlotHelper
         };
     }
 
+    public static IReadOnlyList<PartySlot> GetPreferredSlotsForMember(PartyMemberInfo member)
+    {
+        if (IsTank(member))
+        {
+            return [PartySlot.MT, PartySlot.OT];
+        }
+
+        if (IsHealer(member))
+        {
+            var exactSlot = member.ClassJobId switch
+            {
+                24 => PartySlot.WHM,
+                28 => PartySlot.SCH,
+                33 => PartySlot.AST,
+                40 => PartySlot.SGE,
+                _ => (PartySlot?)null,
+            };
+            var healerSlots = new[] { PartySlot.WHM, PartySlot.AST, PartySlot.SCH, PartySlot.SGE };
+            return exactSlot is null
+                ? healerSlots
+                : [exactSlot.Value, .. healerSlots.Where(slot => slot != exactSlot.Value)];
+        }
+
+        if (MeleeJobs.Contains(member.ClassJobId))
+        {
+            return [PartySlot.D1, PartySlot.D2, PartySlot.D3, PartySlot.D4];
+        }
+
+        if (PhysicalRangedJobs.Contains(member.ClassJobId))
+        {
+            return [PartySlot.D3, PartySlot.D1, PartySlot.D2, PartySlot.D4];
+        }
+
+        if (CasterJobs.Contains(member.ClassJobId))
+        {
+            return [PartySlot.D4, PartySlot.D2, PartySlot.D1, PartySlot.D3];
+        }
+
+        return OrderedSlots;
+    }
+
     public static bool IsTank(PartyMemberInfo member) => TankJobs.Contains(member.ClassJobId);
 
     public static bool IsHealer(PartyMemberInfo member) => HealerJobs.Contains(member.ClassJobId);
