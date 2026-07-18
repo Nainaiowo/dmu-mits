@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 
@@ -8,7 +9,6 @@ namespace DMUMits;
 public static partial class DmuMitigationData
 {
     public const uint DmuTerritoryId = 1363;
-    private const float SamePhaseSyncToleranceSeconds = 30.0f;
 
     private static readonly Regex MitigationNotePattern = new(@"\s*(?:\((\d+)\)|([⁰¹²³⁴⁵⁶⁷⁸⁹]+))", RegexOptions.Compiled);
 
@@ -75,38 +75,91 @@ public static partial class DmuMitigationData
             .ToList();
     }
 
-    public static DmuTimelineSyncPoint? FindSyncPoint(DmuPhase phase, uint actionId, float phaseElapsedSeconds)
+    public static DmuTimelineSyncPoint? FindVisibleCastSyncPoint(
+        DmuPhase phase,
+        uint actionId,
+        DmuTimelineSyncKind kind,
+        float observedPhaseTimeSeconds,
+        IReadOnlySet<string> firedAnchorKeys)
     {
-        return SyncPoints
-            .Where(entry => entry.Phase == phase && entry.ActionId == actionId)
+        return GetVisibleCastSyncPoints(actionId, kind)
+            .Where(entry =>
+                entry.Phase == phase &&
+                !firedAnchorKeys.Contains(GetSyncAnchorKey(entry)) &&
+                entry.MatchesWindow(observedPhaseTimeSeconds))
             .Select(entry => new
             {
                 SyncPoint = entry,
-                Difference = MathF.Abs(entry.PhaseTimeSeconds - phaseElapsedSeconds),
+                Difference = MathF.Abs(entry.PhaseTimeSeconds - observedPhaseTimeSeconds),
             })
-            .Where(entry => entry.Difference <= SamePhaseSyncToleranceSeconds)
             .OrderBy(entry => entry.Difference)
             .Select(entry => entry.SyncPoint)
             .FirstOrDefault();
     }
 
-    public static DmuTimelineSyncPoint? FindForwardSyncPoint(DmuPhase currentPhase, uint actionId)
+    public static DmuTimelineSyncPoint? FindForwardVisibleCastPhaseAnchor(
+        DmuPhase currentPhase,
+        uint actionId,
+        DmuTimelineSyncKind kind,
+        float observedPreviousPhaseTimeSeconds,
+        IReadOnlySet<string> firedAnchorKeys)
     {
-        return SyncPoints
-            .Where(entry => entry.Phase >= currentPhase && entry.ActionId == actionId)
+        return GetVisibleCastSyncPoints(actionId, kind)
+            .Where(entry =>
+                entry.Phase > currentPhase &&
+                entry.IsPhaseAnchor &&
+                entry.MatchesForwardWindow(observedPreviousPhaseTimeSeconds) &&
+                !firedAnchorKeys.Contains(GetSyncAnchorKey(entry)))
             .OrderBy(entry => entry.Phase)
             .ThenBy(entry => entry.PhaseTimeSeconds)
             .FirstOrDefault();
     }
 
+    public static IReadOnlyList<DmuTimelineSyncPoint> GetVisibleCastSyncPoints(uint actionId, DmuTimelineSyncKind kind)
+    {
+        return SyncPoints
+            .Where(entry => entry.Kind == kind && entry.ActionId == actionId)
+            .ToList();
+    }
+
+    public static string GetSyncAnchorKey(DmuTimelineSyncPoint syncPoint)
+    {
+        var phaseTime = syncPoint.PhaseTimeSeconds.ToString("0.###", CultureInfo.InvariantCulture);
+        return $"{syncPoint.Phase}:{syncPoint.Kind}:{syncPoint.ActionId:X}:{phaseTime}";
+    }
+
     public static string GetMitigationDisplayText(DmuTimelineEvent entry, PartySlot slot)
     {
-        return FormatMitigationText(entry.Phase, entry.GetMitigationFor(slot));
+        return GetMitigationDisplayText(entry, slot, 0);
+    }
+
+    public static string GetMitigationDisplayText(DmuTimelineEvent entry, PartySlot slot, uint classJobId)
+    {
+        var text = FormatMitigationText(entry.Phase, GetMitigationFor(entry, slot));
+        return classJobId == 0 ? text : MitigationTextResolver.ResolveForJob(text, classJobId);
+    }
+
+    public static bool HasMitigationFor(DmuTimelineEvent entry, PartySlot slot)
+    {
+        return !string.IsNullOrWhiteSpace(GetMitigationFor(entry, slot));
+    }
+
+    public static string GetMitigationFor(DmuTimelineEvent entry, PartySlot slot)
+    {
+        var mitigations = GetMitigations(entry);
+        return mitigations.TryGetValue(slot, out var mitigation) ? mitigation : string.Empty;
+    }
+
+    public static IReadOnlyDictionary<PartySlot, string> GetMitigations(DmuTimelineEvent entry)
+    {
+        return TryGetSheetMitigationOverride(entry.Id, out var mitigations)
+            ? mitigations
+            : entry.Mitigations;
     }
 
     public static IReadOnlyList<MitigationNote> GetMitigationNotes(DmuTimelineEvent entry, PartySlot slot)
     {
-        var text = entry.GetMitigationFor(slot);
+        var text = GetMitigationFor(entry, slot);
         if (string.IsNullOrWhiteSpace(text))
         {
             return [];
@@ -182,6 +235,8 @@ public static partial class DmuMitigationData
         return text
             .Replace('\r', ' ')
             .Replace('\n', ' ')
+            .Replace("Fey Illumuniation", "Fey Illumination", StringComparison.OrdinalIgnoreCase)
+            .Replace("Scared Soil", "Sacred Soil", StringComparison.OrdinalIgnoreCase)
             .Replace("  ", " ")
             .Trim();
     }

@@ -35,6 +35,10 @@ public enum TimelineTimingSource
 public enum DmuTimelineSyncKind
 {
     CastStart,
+    ActionResolve,
+    HeadMarker,
+    StatusGain,
+    InCombat,
 }
 
 public sealed record DmuTimelineEvent(
@@ -63,7 +67,27 @@ public sealed record DmuTimelineSyncPoint(
     float PhaseTimeSeconds,
     uint ActionId,
     string Label,
-    DmuTimelineSyncKind Kind = DmuTimelineSyncKind.CastStart);
+    DmuTimelineSyncKind Kind = DmuTimelineSyncKind.CastStart,
+    float WindowBeforeSeconds = 2.5f,
+    float WindowAfterSeconds = 2.5f,
+    bool IsPhaseAnchor = false,
+    float? PreviousPhaseObservedTimeSeconds = null,
+    float ForwardWindowBeforeSeconds = 2.5f,
+    float ForwardWindowAfterSeconds = 2.5f)
+{
+    public bool MatchesWindow(float observedPhaseTimeSeconds)
+    {
+        return observedPhaseTimeSeconds >= PhaseTimeSeconds - WindowBeforeSeconds &&
+            observedPhaseTimeSeconds <= PhaseTimeSeconds + WindowAfterSeconds;
+    }
+
+    public bool MatchesForwardWindow(float observedPreviousPhaseTimeSeconds)
+    {
+        return PreviousPhaseObservedTimeSeconds is not { } expectedTime ||
+            observedPreviousPhaseTimeSeconds >= expectedTime - ForwardWindowBeforeSeconds &&
+            observedPreviousPhaseTimeSeconds <= expectedTime + ForwardWindowAfterSeconds;
+    }
+}
 
 public sealed record UpcomingMitigationEvent(
     DmuTimelineEvent Event,

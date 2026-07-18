@@ -1,7 +1,7 @@
 using Dalamud.Bindings.ImGui;
+using Dalamud.Interface.Textures;
 using Dalamud.Interface.Windowing;
 using System;
-using System.Linq;
 using System.Numerics;
 
 namespace DMUMits.Windows;
@@ -9,19 +9,24 @@ namespace DMUMits.Windows;
 public sealed class MainWindow : Window, IDisposable
 {
     private readonly Plugin plugin;
-    private static readonly Vector4 GreenColor = new(0.32f, 1.0f, 0.46f, 1.0f);
-    private static readonly Vector4 GoldColor = new(1.0f, 0.75f, 0.18f, 1.0f);
-    private static readonly Vector4 MutedColor = new(0.70f, 0.74f, 0.78f, 1.0f);
-    private static readonly Vector4 BarBackColor = new(0.10f, 0.12f, 0.14f, 0.88f);
-    private static readonly Vector4 BarFillColor = new(0.21f, 0.47f, 0.62f, 0.88f);
-    private static readonly Vector4 BarBorderColor = new(1.0f, 1.0f, 1.0f, 0.16f);
-    private const float BarHeight = 24.0f;
-    private const float BarGap = 5.0f;
+    private static readonly Vector4 TextColor = new(0.93f, 0.96f, 0.98f, 1.0f);
+    private static readonly Vector4 MutedColor = new(0.68f, 0.75f, 0.79f, 1.0f);
+    private static readonly Vector4 PanelColor = new(0.07f, 0.09f, 0.11f, 0.84f);
+    private static readonly Vector4 RowColor = new(0.09f, 0.12f, 0.14f, 0.88f);
+    private static readonly Vector4 RowFillColor = new(0.18f, 0.36f, 0.44f, 0.34f);
+    private static readonly Vector4 BorderColor = new(0.34f, 0.70f, 0.78f, 0.28f);
+    private static readonly Vector4 AccentColor = new(0.33f, 0.86f, 0.91f, 1.0f);
+    private static readonly Vector4 UseNowColor = new(0.36f, 1.0f, 0.52f, 1.0f);
+    private static readonly Vector4 NextColor = new(1.0f, 0.74f, 0.22f, 1.0f);
+    private static readonly Vector4 WarningDimColor = new(0.95f, 0.22f, 0.20f, 1.0f);
+    private static readonly Vector4 WarningBrightColor = new(1.0f, 0.52f, 0.46f, 1.0f);
+    private const float BarGap = 7.0f;
+    private const float SidePadding = 8.0f;
 
     public MainWindow(Plugin plugin) : base("DMU Mits###DMUMitsMain")
     {
         this.plugin = plugin;
-        Size = new Vector2(360, 300);
+        Size = new Vector2(380, 320);
         SizeCondition = ImGuiCond.FirstUseEver;
         RespectCloseHotkey = false;
     }
@@ -51,13 +56,8 @@ public sealed class MainWindow : Window, IDisposable
 
         var now = DateTime.UtcNow;
         DrawHeader(now);
-        ImGui.Spacing();
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 8.0f);
         DrawSlotPrompt();
-        if (plugin.LocalSlot is null)
-        {
-            ImGui.Spacing();
-        }
-
         DrawUpcomingBars(now);
     }
 
@@ -67,15 +67,43 @@ public sealed class MainWindow : Window, IDisposable
         var phaseName = phaseState is null
             ? "Preview"
             : GetPhaseName(phaseState.Phase);
-        ImGui.TextUnformatted("DMU Mits");
-        ImGui.SameLine();
         var statusText = phaseState switch
         {
             not null => $"{phaseName}  {FormatTime(phaseState.ElapsedSeconds(now))}",
             null when plugin.IsPreviewActive => $"{phaseName}  {FormatTime(plugin.GetPreviewElapsedSeconds(now))}",
             _ => plugin.IsInDmu ? "Waiting for pull" : "Waiting for DMU",
         };
-        ImGui.TextColored(MutedColor, statusText);
+
+        var drawList = ImGui.GetWindowDrawList();
+        var start = ImGui.GetCursorScreenPos();
+        var width = MathF.Max(180.0f, ImGui.GetContentRegionAvail().X);
+        var height = MathF.Max(42.0f, (ImGui.GetTextLineHeight() * 2.0f) + 12.0f);
+        var end = start + new Vector2(width, height);
+        drawList.AddRectFilled(start, end, ImGui.GetColorU32(PanelColor), 6.0f);
+        drawList.AddRect(start, end, ImGui.GetColorU32(BorderColor), 6.0f);
+        drawList.AddRectFilled(start, new Vector2(start.X + 3.0f, end.Y), ImGui.GetColorU32(AccentColor), 6.0f);
+
+        var slotText = plugin.LocalSlot is { } slot
+            ? $"{PartySlotHelper.GetDisplayName(slot)} {MitigationTextResolver.GetJobAbbreviation(plugin.GetClassJobIdForSlot(slot))}".Trim()
+            : "No slot";
+        var slotSize = ImGui.CalcTextSize(slotText) + new Vector2(14.0f, 6.0f);
+        var slotStart = new Vector2(end.X - slotSize.X - 8.0f, start.Y + 8.0f);
+        var showSlotBadge = slotSize.X + 132.0f <= width;
+        var textStart = start + new Vector2(10.0f, 6.0f);
+        var textEndX = showSlotBadge ? slotStart.X - 6.0f : end.X - 8.0f;
+        drawList.PushClipRect(textStart, new Vector2(MathF.Max(textStart.X + 20.0f, textEndX), end.Y), true);
+        drawList.AddText(textStart, ImGui.GetColorU32(TextColor), "DMU Mits");
+        drawList.AddText(textStart + new Vector2(0.0f, ImGui.GetTextLineHeight() + 3.0f), ImGui.GetColorU32(MutedColor), FitText(statusText, MathF.Max(20.0f, textEndX - textStart.X)));
+        drawList.PopClipRect();
+
+        if (showSlotBadge)
+        {
+            drawList.AddRectFilled(slotStart, slotStart + slotSize, ImGui.GetColorU32(new Vector4(0.02f, 0.04f, 0.05f, 0.72f)), 4.0f);
+            drawList.AddRect(slotStart, slotStart + slotSize, ImGui.GetColorU32(BorderColor), 4.0f);
+            drawList.AddText(slotStart + new Vector2(7.0f, 3.0f), ImGui.GetColorU32(plugin.LocalSlot is null ? MutedColor : AccentColor), slotText);
+        }
+
+        ImGui.Dummy(new Vector2(width, height));
 
         if (phaseState is not null && !string.IsNullOrWhiteSpace(phaseState.SyncLabel))
         {
@@ -90,7 +118,8 @@ public sealed class MainWindow : Window, IDisposable
             return;
         }
 
-        ImGui.TextColored(MutedColor, "Set your party slot");
+        ImGui.TextColored(NextColor, "Set your party slot in settings.");
+        ImGui.SetCursorPosY(ImGui.GetCursorPosY() + 4.0f);
     }
 
     private void DrawUpcomingBars(DateTime now)
@@ -114,77 +143,70 @@ public sealed class MainWindow : Window, IDisposable
     {
         var drawList = ImGui.GetWindowDrawList();
         var start = ImGui.GetCursorScreenPos();
-        var width = MathF.Max(120.0f, ImGui.GetContentRegionAvail().X);
-        var end = start + new Vector2(width, BarHeight);
+        var width = MathF.Max(80.0f, ImGui.GetContentRegionAvail().X);
+        var height = MathF.Max(28.0f, ImGui.GetTextLineHeight() + 12.0f);
+        var end = start + new Vector2(width, height);
         var fillRatio = Math.Clamp(entry.SecondsRemaining / Math.Max(1.0f, plugin.Configuration.LookAheadSeconds), 0.0f, 1.0f);
-        var fillColor = entry.IsUseNow
-            ? GreenColor
-            : entry.IsNext ? GoldColor : BarFillColor;
-        var labelColor = entry.IsUseNow
-            ? GreenColor
-            : entry.IsNext ? GoldColor : new Vector4(0.94f, 0.96f, 0.98f, 1.0f);
+        var accentColor = GetStateColor(entry);
 
-        drawList.AddRectFilled(start, end, ImGui.GetColorU32(BarBackColor), 4.0f);
-        drawList.AddRectFilled(start, new Vector2(start.X + width * fillRatio, end.Y), ImGui.GetColorU32(fillColor with { W = 0.45f }), 4.0f);
-        drawList.AddRect(start, end, ImGui.GetColorU32(BarBorderColor), 4.0f);
+        drawList.AddRectFilled(start, end, ImGui.GetColorU32(RowColor), 5.0f);
+        drawList.AddRectFilled(start, new Vector2(start.X + width * fillRatio, end.Y), ImGui.GetColorU32(RowFillColor), 5.0f);
+        drawList.AddRectFilled(start, new Vector2(start.X + 3.0f, end.Y), ImGui.GetColorU32(accentColor), 5.0f);
+        drawList.AddRect(start, end, ImGui.GetColorU32(BorderColor), 5.0f);
 
         var timeText = entry.SecondsRemaining < 0.0f ? "now" : $"{MathF.Ceiling(entry.SecondsRemaining):0}s";
         var timeSize = ImGui.CalcTextSize(timeText);
-        var namePosition = start + new Vector2(8.0f, 4.0f);
-        var timePosition = new Vector2(end.X - timeSize.X - 8.0f, start.Y + 4.0f);
-        drawList.AddText(namePosition, ImGui.GetColorU32(labelColor), entry.Event.Name);
-        drawList.AddText(timePosition, ImGui.GetColorU32(labelColor), timeText);
+        var timePosition = new Vector2(end.X - timeSize.X - SidePadding, start.Y + ((height - timeSize.Y) * 0.5f));
+        var nameMaxWidth = MathF.Max(20.0f, width - timeSize.X - 28.0f);
+        var nameText = FitText(entry.Event.Name, nameMaxWidth);
+        drawList.PushClipRect(start, end, true);
+        drawList.AddText(start + new Vector2(SidePadding + 4.0f, (height - ImGui.GetTextLineHeight()) * 0.5f), ImGui.GetColorU32(GetStateTextColor(entry)), nameText);
+        drawList.AddText(timePosition, ImGui.GetColorU32(GetStateTextColor(entry)), timeText);
+        drawList.PopClipRect();
 
-        ImGui.Dummy(new Vector2(width, BarHeight));
+        ImGui.Dummy(new Vector2(width, height));
         var barHovered = ImGui.IsItemHovered();
         var mitigationHovered = false;
-        if (slot is not null && entry.Event.HasMitigationFor(slot.Value))
+        MitigationCooldownWarning? warning = null;
+        uint classJobId = 0;
+        if (slot is not null)
         {
-            mitigationHovered = DrawMechanicBarMitigation(entry, slot.Value, width);
+            classJobId = plugin.GetClassJobIdForSlot(slot.Value);
+            mitigationHovered = DrawMechanicBarMitigation(entry, slot.Value, classJobId, width, out warning);
         }
 
-        if (slot is not null && entry.Event.HasMitigationFor(slot.Value) && (barHovered || mitigationHovered))
+        if (slot is not null && (barHovered || mitigationHovered))
         {
-            var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot.Value);
-
-            ImGui.BeginTooltip();
-            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 32.0f);
-            ImGui.TextUnformatted(DmuMitigationData.GetMitigationDisplayText(entry.Event, slot.Value));
-            if (notes.Count > 0)
-            {
-                ImGui.Separator();
-                foreach (var note in notes)
-                {
-                    ImGui.TextWrapped($"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.DetailText}");
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(entry.Event.Extras))
-            {
-                ImGui.Separator();
-                ImGui.TextWrapped(entry.Event.Extras);
-            }
-            ImGui.PopTextWrapPos();
-            ImGui.EndTooltip();
+            DrawMitigationTooltip(entry, slot.Value, classJobId, warning);
         }
     }
 
-    private static bool DrawMechanicBarMitigation(UpcomingMitigationEvent entry, PartySlot slot, float width)
+    private bool DrawMechanicBarMitigation(
+        UpcomingMitigationEvent entry,
+        PartySlot slot,
+        uint classJobId,
+        float width,
+        out MitigationCooldownWarning? warning)
     {
-        var mitigationText = DmuMitigationData.GetMitigationDisplayText(entry.Event, slot);
+        var mitigationText = DmuMitigationData.GetMitigationDisplayText(entry.Event, slot, classJobId);
+        warning = CooldownTracker.GetWarning(mitigationText, entry.SecondsRemaining);
         if (string.IsNullOrWhiteSpace(mitigationText))
         {
             return false;
         }
 
         var hovered = false;
-        var textColor = entry.IsUseNow
-            ? GreenColor
-            : entry.IsNext ? GoldColor : MutedColor;
-        const float leftPadding = 8.0f;
+        var textColor = warning is not null
+            ? GetBlinkingWarningColor()
+            : GetMitigationTextColor(entry);
+        var iconSize = MathF.Max(18.0f, ImGui.GetTextLineHeight() + 2.0f);
         var cursorX = ImGui.GetCursorPosX();
-        ImGui.SetCursorPosX(cursorX + leftPadding);
-        ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - leftPadding));
+        ImGui.SetCursorPosX(cursorX + SidePadding);
+        var iconId = MitigationActionCatalog.ResolveIconId(mitigationText);
+        DrawActionIcon(iconId, iconSize);
+        hovered |= ImGui.IsItemHovered();
+        ImGui.SameLine();
+        ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - SidePadding));
         ImGui.TextColored(textColor, mitigationText);
         hovered |= ImGui.IsItemHovered();
         ImGui.PopTextWrapPos();
@@ -196,8 +218,8 @@ public sealed class MainWindow : Window, IDisposable
 
         foreach (var note in DmuMitigationData.GetMitigationNotes(entry.Event, slot))
         {
-            ImGui.SetCursorPosX(cursorX + leftPadding);
-            ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - leftPadding));
+            ImGui.SetCursorPosX(cursorX + SidePadding + iconSize + ImGui.GetStyle().ItemSpacing.X);
+            ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - SidePadding));
             ImGui.TextColored(MutedColor, $"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.ShortText}");
             hovered |= ImGui.IsItemHovered();
             ImGui.PopTextWrapPos();
@@ -206,10 +228,136 @@ public sealed class MainWindow : Window, IDisposable
         return hovered;
     }
 
+    private static void DrawActionIcon(uint iconId, float iconSize)
+    {
+        if (iconId == 0)
+        {
+            ImGui.Dummy(new Vector2(iconSize));
+            return;
+        }
+
+        try
+        {
+            var texture = Plugin.TextureProvider.GetFromGameIcon(new GameIconLookup(iconId));
+            var wrap = texture.GetWrapOrDefault();
+            if (wrap is not null)
+            {
+                ImGui.Image(wrap.Handle, new Vector2(iconSize));
+                return;
+            }
+        }
+        catch
+        {
+        }
+
+        ImGui.Dummy(new Vector2(iconSize));
+    }
+
+    private void DrawMitigationTooltip(
+        UpcomingMitigationEvent entry,
+        PartySlot slot,
+        uint classJobId,
+        MitigationCooldownWarning? warning)
+    {
+        var mitigationText = DmuMitigationData.GetMitigationDisplayText(entry.Event, slot, classJobId);
+        var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot);
+        if (string.IsNullOrWhiteSpace(mitigationText) &&
+            notes.Count == 0 &&
+            string.IsNullOrWhiteSpace(entry.Event.Extras) &&
+            warning is null)
+        {
+            return;
+        }
+
+        ImGui.BeginTooltip();
+        ImGui.PushTextWrapPos(ImGui.GetFontSize() * 32.0f);
+        if (!string.IsNullOrWhiteSpace(mitigationText))
+        {
+            ImGui.TextUnformatted(mitigationText);
+        }
+
+        if (warning is not null)
+        {
+            ImGui.Separator();
+            ImGui.TextColored(WarningBrightColor, $"Cooldown: {warning.ActionName} ready in {FormatSeconds(warning.ReadyInSeconds)}");
+        }
+
+        if (notes.Count > 0)
+        {
+            ImGui.Separator();
+            foreach (var note in notes)
+            {
+                ImGui.TextWrapped($"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.DetailText}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Event.Extras))
+        {
+            ImGui.Separator();
+            ImGui.TextWrapped(entry.Event.Extras);
+        }
+
+        ImGui.PopTextWrapPos();
+        ImGui.EndTooltip();
+    }
+
+    private static Vector4 GetStateColor(UpcomingMitigationEvent entry)
+    {
+        return entry.IsUseNow
+            ? UseNowColor
+            : entry.IsNext ? NextColor : AccentColor;
+    }
+
+    private static Vector4 GetStateTextColor(UpcomingMitigationEvent entry)
+    {
+        return entry.IsUseNow || entry.IsNext ? GetStateColor(entry) : TextColor;
+    }
+
+    private static Vector4 GetMitigationTextColor(UpcomingMitigationEvent entry)
+    {
+        return entry.IsUseNow
+            ? UseNowColor
+            : entry.IsNext ? NextColor : MutedColor;
+    }
+
+    private static Vector4 GetBlinkingWarningColor()
+    {
+        var pulse = (MathF.Sin((float)ImGui.GetTime() * 8.0f) + 1.0f) * 0.5f;
+        return Vector4.Lerp(WarningDimColor, WarningBrightColor, pulse);
+    }
+
+    private static string FitText(string text, float maxWidth)
+    {
+        if (ImGui.CalcTextSize(text).X <= maxWidth)
+        {
+            return text;
+        }
+
+        const string suffix = "...";
+        for (var length = text.Length - 1; length > 0; length--)
+        {
+            var candidate = string.Concat(text.AsSpan(0, length), suffix);
+            if (ImGui.CalcTextSize(candidate).X <= maxWidth)
+            {
+                return candidate;
+            }
+        }
+
+        return suffix;
+    }
+
     private static string FormatTime(float seconds)
     {
         var total = Math.Max(0, (int)MathF.Floor(seconds));
         return $"{total / 60:0}:{total % 60:00}";
+    }
+
+    private static string FormatSeconds(float seconds)
+    {
+        var total = Math.Max(0, (int)MathF.Ceiling(seconds));
+        return total >= 60
+            ? $"{total / 60:0}:{total % 60:00}"
+            : $"{total:0}s";
     }
 
     private static string GetPhaseName(DmuPhase phase)
