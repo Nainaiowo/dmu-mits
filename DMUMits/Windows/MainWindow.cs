@@ -52,8 +52,12 @@ public sealed class MainWindow : Window, IDisposable
         var now = DateTime.UtcNow;
         DrawHeader(now);
         ImGui.Spacing();
-        DrawUseNow(now);
-        ImGui.Spacing();
+        DrawSlotPrompt();
+        if (plugin.LocalSlot is null)
+        {
+            ImGui.Spacing();
+        }
+
         DrawUpcomingBars(now);
     }
 
@@ -79,26 +83,14 @@ public sealed class MainWindow : Window, IDisposable
         }
     }
 
-    private void DrawUseNow(DateTime now)
+    private void DrawSlotPrompt()
     {
-        var slot = plugin.LocalSlot;
-        var highlighted = plugin.GetHighlightedMitigationEvent(now);
-        var textColor = highlighted is null
-            ? MutedColor
-            : highlighted.IsUseNow ? GreenColor : GoldColor;
-        var text = slot is null
-            ? "Set your party slot"
-            : highlighted is null
-                ? "No upcoming mit"
-                : highlighted.IsUseNow
-                    ? DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value)
-                    : $"Next: {DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value)}";
-        ImGui.TextColored(textColor, text);
-
-        foreach (var note in plugin.GetUseNowNotes(now))
+        if (plugin.LocalSlot is not null)
         {
-            ImGui.TextColored(MutedColor, $"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.ShortText}");
+            return;
         }
+
+        ImGui.TextColored(MutedColor, "Set your party slot");
     }
 
     private void DrawUpcomingBars(DateTime now)
@@ -144,8 +136,14 @@ public sealed class MainWindow : Window, IDisposable
         drawList.AddText(timePosition, ImGui.GetColorU32(labelColor), timeText);
 
         ImGui.Dummy(new Vector2(width, BarHeight));
+        var barHovered = ImGui.IsItemHovered();
+        var mitigationHovered = false;
+        if (slot is not null && entry.Event.HasMitigationFor(slot.Value))
+        {
+            mitigationHovered = DrawMechanicBarMitigation(entry, slot.Value, width);
+        }
 
-        if (slot is not null && entry.Event.HasMitigationFor(slot.Value) && ImGui.IsItemHovered())
+        if (slot is not null && entry.Event.HasMitigationFor(slot.Value) && (barHovered || mitigationHovered))
         {
             var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot.Value);
 
@@ -169,6 +167,43 @@ public sealed class MainWindow : Window, IDisposable
             ImGui.PopTextWrapPos();
             ImGui.EndTooltip();
         }
+    }
+
+    private static bool DrawMechanicBarMitigation(UpcomingMitigationEvent entry, PartySlot slot, float width)
+    {
+        var mitigationText = DmuMitigationData.GetMitigationDisplayText(entry.Event, slot);
+        if (string.IsNullOrWhiteSpace(mitigationText))
+        {
+            return false;
+        }
+
+        var hovered = false;
+        var textColor = entry.IsUseNow
+            ? GreenColor
+            : entry.IsNext ? GoldColor : MutedColor;
+        const float leftPadding = 8.0f;
+        var cursorX = ImGui.GetCursorPosX();
+        ImGui.SetCursorPosX(cursorX + leftPadding);
+        ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - leftPadding));
+        ImGui.TextColored(textColor, mitigationText);
+        hovered |= ImGui.IsItemHovered();
+        ImGui.PopTextWrapPos();
+
+        if (!entry.IsUseNow && !entry.IsNext)
+        {
+            return hovered;
+        }
+
+        foreach (var note in DmuMitigationData.GetMitigationNotes(entry.Event, slot))
+        {
+            ImGui.SetCursorPosX(cursorX + leftPadding);
+            ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - leftPadding));
+            ImGui.TextColored(MutedColor, $"{DmuMitigationData.GetMitigationNoteMarker(note.Number)} {note.ShortText}");
+            hovered |= ImGui.IsItemHovered();
+            ImGui.PopTextWrapPos();
+        }
+
+        return hovered;
     }
 
     private static string FormatTime(float seconds)

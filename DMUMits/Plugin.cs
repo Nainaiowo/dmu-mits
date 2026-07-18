@@ -347,7 +347,7 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         var text = DmuMitigationData.GetMitigationDisplayText(highlighted.Event, slot.Value);
-        return highlighted.IsUseNow ? text : $"Next: {text}";
+        return text;
     }
 
     public UpcomingMitigationEvent? GetHighlightedMitigationEvent(DateTime now)
