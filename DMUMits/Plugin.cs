@@ -287,20 +287,70 @@ public sealed class Plugin : IDalamudPlugin
         var phase = CurrentPhaseState?.Phase ?? DmuPhase.P1;
         var phaseElapsed = CurrentPhaseState?.ElapsedSeconds(now) ?? 0.0f;
         var slot = LocalSlot;
-        var events = DmuMitigationData.GetEventsForPhase(phase);
-        var upcoming = events
-            .Where(entry => entry.PhaseTimeSeconds >= phaseElapsed - 2.0f)
-            .Select(entry => new UpcomingMitigationEvent(
-                entry,
-                entry.PhaseTimeSeconds - phaseElapsed,
-                slot is not null && HasVisibleMitigationForSlot(entry, slot.Value) && entry.PhaseTimeSeconds - phaseElapsed <= Configuration.UseNowLeadSeconds,
-                false))
-            .Where(entry => entry.SecondsRemaining <= Configuration.LookAheadSeconds)
+        var upcoming = GetUpcomingEventsForPhase(phase, phaseElapsed, slot)
+            .Concat(GetNextPhaseVisualUpcomingEvents(now, phase, phaseElapsed, slot))
             .OrderBy(entry => entry.SecondsRemaining)
             .ToList();
         return MarkNextMitigation(upcoming, slot)
             .Take(takeCount)
             .ToList();
+    }
+
+    private IEnumerable<UpcomingMitigationEvent> GetUpcomingEventsForPhase(
+        DmuPhase phase,
+        float phaseElapsed,
+        PartySlot? slot)
+    {
+        return DmuMitigationData.GetEventsForPhase(phase)
+            .Select(entry => CreateUpcomingEvent(entry, entry.PhaseTimeSeconds - phaseElapsed, slot))
+            .Where(entry => entry.SecondsRemaining >= -2.0f && entry.SecondsRemaining <= Configuration.LookAheadSeconds);
+    }
+
+    private IEnumerable<UpcomingMitigationEvent> GetNextPhaseVisualUpcomingEvents(
+        DateTime now,
+        DmuPhase phase,
+        float phaseElapsed,
+        PartySlot? slot)
+    {
+        if (DmuMitigationData.GetNextPhase(phase) is not { } nextPhase ||
+            !TryGetNextPhaseStartsIn(now, phase, phaseElapsed, out var nextPhaseStartsIn))
+        {
+            return [];
+        }
+
+        return DmuMitigationData.GetEventsForPhase(nextPhase)
+            .Select(entry => CreateUpcomingEvent(entry, nextPhaseStartsIn + entry.PhaseTimeSeconds, slot))
+            .Where(entry => entry.SecondsRemaining >= -2.0f && entry.SecondsRemaining <= Configuration.LookAheadSeconds);
+    }
+
+    private bool TryGetNextPhaseStartsIn(DateTime now, DmuPhase phase, float phaseElapsed, out float secondsRemaining)
+    {
+        secondsRemaining = 0.0f;
+        if (phase == DmuPhase.P2 && pendingP3StartAtUtc is { } scheduledP3Start)
+        {
+            secondsRemaining = (float)(scheduledP3Start - now).TotalSeconds;
+            return true;
+        }
+
+        if (!DmuMitigationData.TryGetActNextPhaseStartElapsed(phase, out var nextPhaseStartElapsed))
+        {
+            return false;
+        }
+
+        secondsRemaining = nextPhaseStartElapsed - phaseElapsed;
+        return true;
+    }
+
+    private UpcomingMitigationEvent CreateUpcomingEvent(
+        DmuTimelineEvent entry,
+        float secondsRemaining,
+        PartySlot? slot)
+    {
+        return new UpcomingMitigationEvent(
+            entry,
+            secondsRemaining,
+            slot is not null && HasVisibleMitigationForSlot(entry, slot.Value) && secondsRemaining <= Configuration.UseNowLeadSeconds,
+            false);
     }
 
     private IReadOnlyList<UpcomingMitigationEvent> GetPreviewUpcomingEvents(DateTime now, int takeCount)

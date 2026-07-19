@@ -158,7 +158,7 @@ public sealed class MainWindow : Window, IDisposable
         var timeSize = ImGui.CalcTextSize(timeText);
         var timePosition = new Vector2(end.X - timeSize.X - SidePadding, start.Y + ((height - timeSize.Y) * 0.5f));
         var nameMaxWidth = MathF.Max(20.0f, width - timeSize.X - 28.0f);
-        var nameText = FitText(entry.Event.Name, nameMaxWidth);
+        var nameText = FitText(GetMechanicDisplayName(entry), nameMaxWidth);
         drawList.PushClipRect(start, end, true);
         drawList.AddText(start + new Vector2(SidePadding + 4.0f, (height - ImGui.GetTextLineHeight()) * 0.5f), ImGui.GetColorU32(GetStateTextColor(entry)), nameText);
         drawList.AddText(timePosition, ImGui.GetColorU32(GetStateTextColor(entry)), timeText);
@@ -365,5 +365,25 @@ public sealed class MainWindow : Window, IDisposable
         return DmuMitigationData.PhaseNames.TryGetValue(phase, out var name)
             ? name
             : phase.ToString();
+    }
+
+    private string GetMechanicDisplayName(UpcomingMitigationEvent entry)
+    {
+        return plugin.CurrentPhaseState is { } phaseState && entry.Event.Phase != phaseState.Phase
+            ? $"{GetPhaseTag(entry.Event.Phase)}: {entry.Event.Name}"
+            : entry.Event.Name;
+    }
+
+    private static string GetPhaseTag(DmuPhase phase)
+    {
+        return phase switch
+        {
+            DmuPhase.P1 => "P1",
+            DmuPhase.P2 => "P2",
+            DmuPhase.P3 => "P3",
+            DmuPhase.P4 => "P4",
+            DmuPhase.P5 => "P5",
+            _ => phase.ToString(),
+        };
     }
 }

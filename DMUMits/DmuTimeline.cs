@@ -67,12 +67,47 @@ public static partial class DmuMitigationData
         [DmuPhase.P5] = "P5 Ultima Kefka",
     };
 
+    private static readonly IReadOnlyDictionary<DmuPhase, float> ActPhaseStartTimes = new Dictionary<DmuPhase, float>
+    {
+        [DmuPhase.P1] = 0.0f,
+        [DmuPhase.P2] = 207.6f,
+        [DmuPhase.P3] = 540.3f,
+        [DmuPhase.P4] = 995.0f,
+        [DmuPhase.P5] = 1255.6f,
+    };
+
     public static IReadOnlyList<DmuTimelineEvent> GetEventsForPhase(DmuPhase phase)
     {
         return Events
             .Where(entry => entry.Phase == phase)
             .OrderBy(entry => entry.PhaseTimeSeconds)
             .ToList();
+    }
+
+    public static DmuPhase? GetNextPhase(DmuPhase phase)
+    {
+        return phase switch
+        {
+            DmuPhase.P1 => DmuPhase.P2,
+            DmuPhase.P2 => DmuPhase.P3,
+            DmuPhase.P3 => DmuPhase.P4,
+            DmuPhase.P4 => DmuPhase.P5,
+            _ => null,
+        };
+    }
+
+    public static bool TryGetActNextPhaseStartElapsed(DmuPhase phase, out float phaseElapsed)
+    {
+        phaseElapsed = 0.0f;
+        if (GetNextPhase(phase) is not { } nextPhase ||
+            !ActPhaseStartTimes.TryGetValue(phase, out var currentPhaseStart) ||
+            !ActPhaseStartTimes.TryGetValue(nextPhase, out var nextPhaseStart))
+        {
+            return false;
+        }
+
+        phaseElapsed = nextPhaseStart - currentPhaseStart;
+        return phaseElapsed >= 0.0f;
     }
 
     public static DmuTimelineSyncPoint? FindVisibleCastSyncPoint(
