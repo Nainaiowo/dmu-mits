@@ -62,6 +62,8 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
 
+    public MitigationSheetImportResult MitigationSheetImportResult { get; private set; } = MitigationSheetImportResult.Empty;
+
     public IReadOnlyList<PartyMemberInfo> CurrentParty { get; private set; } = [];
 
     public PhaseState? CurrentPhaseState { get; private set; }
@@ -78,6 +80,7 @@ public sealed class Plugin : IDalamudPlugin
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         EnsureSlotList();
+        RebuildImportedMitigationSheet();
 
         mainWindow = new MainWindow(this)
         {
@@ -173,6 +176,39 @@ public sealed class Plugin : IDalamudPlugin
     public void SetUseNowLeadSeconds(float value)
     {
         Configuration.UseNowLeadSeconds = Math.Clamp(value, 4.0f, 25.0f);
+        SaveConfiguration();
+    }
+
+    public void SetMitigationSheetDefaultPhase(DmuPhase phase)
+    {
+        Configuration.MitigationSheetDefaultPhase = phase is >= DmuPhase.Unknown and <= DmuPhase.P5
+            ? phase
+            : DmuPhase.Unknown;
+        RebuildImportedMitigationSheet();
+        SaveConfiguration();
+    }
+
+    public void SetUseImportedMitigationSheet(bool active)
+    {
+        Configuration.UseImportedMitigationSheet = active &&
+            !string.IsNullOrWhiteSpace(Configuration.ImportedMitigationSheetText);
+        RebuildImportedMitigationSheet();
+        SaveConfiguration();
+    }
+
+    public void ImportMitigationSheet(string rawSheetText)
+    {
+        Configuration.ImportedMitigationSheetText = rawSheetText ?? string.Empty;
+        Configuration.UseImportedMitigationSheet = !string.IsNullOrWhiteSpace(Configuration.ImportedMitigationSheetText);
+        RebuildImportedMitigationSheet();
+        SaveConfiguration();
+    }
+
+    public void ClearImportedMitigationSheet()
+    {
+        Configuration.ImportedMitigationSheetText = string.Empty;
+        Configuration.UseImportedMitigationSheet = false;
+        RebuildImportedMitigationSheet();
         SaveConfiguration();
     }
 
@@ -479,6 +515,14 @@ public sealed class Plugin : IDalamudPlugin
     {
         return !string.IsNullOrWhiteSpace(
             DmuMitigationData.GetMitigationDisplayText(entry, slot, GetClassJobIdForSlot(slot)));
+    }
+
+    private void RebuildImportedMitigationSheet()
+    {
+        MitigationSheetImportResult = MitigationSheetImporter.Import(
+            Configuration.ImportedMitigationSheetText,
+            Configuration.MitigationSheetDefaultPhase,
+            Configuration.UseImportedMitigationSheet);
     }
 
     private void OnMainCommand(string command, string args)

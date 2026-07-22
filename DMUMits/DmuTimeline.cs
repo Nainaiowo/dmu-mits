@@ -10,6 +10,14 @@ public static partial class DmuMitigationData
 {
     public const uint DmuTerritoryId = 1363;
 
+    private static readonly IReadOnlyDictionary<PartySlot, string> EmptyMitigations =
+        new Dictionary<PartySlot, string>();
+
+    private static IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> ImportedSheetMitigationOverrides =
+        new Dictionary<string, IReadOnlyDictionary<PartySlot, string>>();
+
+    private static bool UseImportedSheetMitigationOverrides;
+
     private static readonly Regex MitigationNotePattern = new(@"\s*(?:\((\d+)\)|([⁰¹²³⁴⁵⁶⁷⁸⁹]+))", RegexOptions.Compiled);
 
     private static readonly IReadOnlyDictionary<DmuPhase, IReadOnlyDictionary<int, MitigationNote>> MitigationNotes =
@@ -187,9 +195,24 @@ public static partial class DmuMitigationData
 
     public static IReadOnlyDictionary<PartySlot, string> GetMitigations(DmuTimelineEvent entry)
     {
-        return TryGetSheetMitigationOverride(entry.Id, out var mitigations)
-            ? mitigations
+        if (UseImportedSheetMitigationOverrides)
+        {
+            return ImportedSheetMitigationOverrides.TryGetValue(entry.Id, out var importedMitigations)
+                ? importedMitigations
+                : EmptyMitigations;
+        }
+
+        return TryGetFallbackSheetMitigationOverride(entry.Id, out var fallbackMitigations)
+            ? fallbackMitigations
             : entry.Mitigations;
+    }
+
+    public static void SetImportedSheetMitigationOverrides(
+        IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> mitigations,
+        bool active)
+    {
+        ImportedSheetMitigationOverrides = mitigations;
+        UseImportedSheetMitigationOverrides = active;
     }
 
     public static IReadOnlyList<MitigationNote> GetMitigationNotes(DmuTimelineEvent entry, PartySlot slot)

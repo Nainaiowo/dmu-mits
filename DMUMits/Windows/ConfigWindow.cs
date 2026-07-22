@@ -18,10 +18,12 @@ public sealed class ConfigWindow : Window, IDisposable
     private static readonly Vector4 PlaceholderBorderColor = new(1.0f, 1.0f, 1.0f, 0.22f);
     private static readonly Vector4 PlaceholderTextColor = new(0.70f, 0.74f, 0.78f, 1.0f);
     private PartySlot? draggingSlot;
+    private string mitigationSheetBuffer;
 
     public ConfigWindow(Plugin plugin) : base("DMU Mits Settings###DMUMitsConfig")
     {
         this.plugin = plugin;
+        mitigationSheetBuffer = plugin.Configuration.ImportedMitigationSheetText;
         Size = new Vector2(560, 440);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
@@ -40,6 +42,12 @@ public sealed class ConfigWindow : Window, IDisposable
         if (ImGui.BeginTabItem("Settings"))
         {
             DrawSettings();
+            ImGui.EndTabItem();
+        }
+
+        if (ImGui.BeginTabItem("Mit Sheet"))
+        {
+            DrawMitigationSheetImport();
             ImGui.EndTabItem();
         }
 
@@ -107,6 +115,142 @@ public sealed class ConfigWindow : Window, IDisposable
 
         ImGui.Spacing();
         DrawPartySlots();
+    }
+
+    private void DrawMitigationSheetImport()
+    {
+        DrawSectionHeader("Mitigation sheet", "Paste copied Google Sheets or Excel cells. ACT timeline timing stays authoritative.");
+        ImGui.TextWrapped("Rows are matched by phase, mechanic name, and top-to-bottom order. Unmatched rows are listed here so wrong calls do not silently appear.");
+
+        ImGui.Spacing();
+        DrawMitigationSheetDefaultPhaseSelector();
+        DrawMitigationSheetActiveSelector();
+        ImGui.Spacing();
+        ImGui.InputTextMultiline("##DMUMitsMitSheetImport", ref mitigationSheetBuffer, 262144, new Vector2(-1.0f, 180.0f));
+
+        if (ImGui.Button("Paste clipboard"))
+        {
+            mitigationSheetBuffer = ImGui.GetClipboardText() ?? string.Empty;
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Import sheet"))
+        {
+            plugin.ImportMitigationSheet(mitigationSheetBuffer);
+        }
+
+        ImGui.SameLine();
+        if (ImGui.Button("Clear imported sheet"))
+        {
+            mitigationSheetBuffer = string.Empty;
+            plugin.ClearImportedMitigationSheet();
+        }
+
+        DrawMitigationSheetImportSummary();
+    }
+
+    private void DrawMitigationSheetDefaultPhaseSelector()
+    {
+        var labels = new[]
+        {
+            "Require phase in pasted rows",
+            "P1 Kefka",
+            "P2 Forsaken Kefka",
+            "P3 Chaos & Exdeath",
+            "P4 Kefka Says",
+            "P5 Ultima Kefka",
+        };
+        var phase = plugin.Configuration.MitigationSheetDefaultPhase;
+        var index = phase switch
+        {
+            DmuPhase.P1 => 1,
+            DmuPhase.P2 => 2,
+            DmuPhase.P3 => 3,
+            DmuPhase.P4 => 4,
+            DmuPhase.P5 => 5,
+            _ => 0,
+        };
+
+        ImGui.SetNextItemWidth(-1.0f);
+        if (!ImGui.Combo("Rows without a phase", ref index, labels, labels.Length))
+        {
+            return;
+        }
+
+        var selectedPhase = index switch
+        {
+            1 => DmuPhase.P1,
+            2 => DmuPhase.P2,
+            3 => DmuPhase.P3,
+            4 => DmuPhase.P4,
+            5 => DmuPhase.P5,
+            _ => DmuPhase.Unknown,
+        };
+        plugin.SetMitigationSheetDefaultPhase(selectedPhase);
+    }
+
+    private void DrawMitigationSheetActiveSelector()
+    {
+        var active = plugin.Configuration.UseImportedMitigationSheet;
+        var hasImportedText = !string.IsNullOrWhiteSpace(plugin.Configuration.ImportedMitigationSheetText);
+        ImGui.BeginDisabled(!hasImportedText);
+        if (ImGui.Checkbox("Use imported sheet instead of built-in fallback", ref active))
+        {
+            plugin.SetUseImportedMitigationSheet(active);
+        }
+
+        ImGui.EndDisabled();
+        ImGui.TextDisabled(hasImportedText
+            ? "Turn this off to use the built-in Ikuya fallback sheet again."
+            : "Built-in Ikuya fallback sheet is active until you import a sheet.");
+    }
+
+    private void DrawMitigationSheetImportSummary()
+    {
+        var result = plugin.MitigationSheetImportResult;
+        ImGui.Spacing();
+        if (!plugin.Configuration.UseImportedMitigationSheet)
+        {
+            ImGui.TextColored(AccentColor, "Built-in fallback mit sheet is active.");
+        }
+        else if (result.ParsedRows == 0)
+        {
+            ImGui.TextColored(WarningColor, "No imported mitigation sheet is active. The helper will show timeline mechanics without mit calls.");
+        }
+        else
+        {
+            ImGui.TextColored(AccentColor, $"Imported {result.MatchedRows}/{result.ParsedRows} mitigation rows.");
+        }
+
+        if (result.Warnings.Count > 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(WarningColor, "Import warnings");
+            foreach (var warning in result.Warnings.Take(8))
+            {
+                ImGui.BulletText(warning);
+            }
+
+            if (result.Warnings.Count > 8)
+            {
+                ImGui.TextDisabled($"+ {result.Warnings.Count - 8} more");
+            }
+        }
+
+        if (result.UnmatchedMechanics.Count > 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(WarningColor, $"Unmatched rows ({result.UnmatchedRows})");
+            foreach (var mechanic in result.UnmatchedMechanics.Take(12))
+            {
+                ImGui.BulletText(mechanic);
+            }
+
+            if (result.UnmatchedMechanics.Count > 12)
+            {
+                ImGui.TextDisabled($"+ {result.UnmatchedMechanics.Count - 12} more");
+            }
+        }
     }
 
     private void DrawPartySlots()

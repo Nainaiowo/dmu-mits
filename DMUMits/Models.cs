@@ -53,12 +53,12 @@ public sealed record DmuTimelineEvent(
 {
     public bool HasMitigationFor(PartySlot slot)
     {
-        return Mitigations.TryGetValue(slot, out var mitigation) && !string.IsNullOrWhiteSpace(mitigation);
+        return DmuMitigationData.HasMitigationFor(this, slot);
     }
 
     public string GetMitigationFor(PartySlot slot)
     {
-        return Mitigations.TryGetValue(slot, out var mitigation) ? mitigation : string.Empty;
+        return DmuMitigationData.GetMitigationFor(this, slot);
     }
 }
 
