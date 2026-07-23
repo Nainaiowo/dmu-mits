@@ -124,6 +124,7 @@ public sealed class MainWindow : Window, IDisposable
         if (upcoming.Count == 0)
         {
             ImGui.TextDisabled(plugin.IsInDmu ? "No upcoming mitigation entries." : "Open settings or enter DMU.");
+            ImGui.TextDisabled("Please check party assignments if there is a fake melee.");
             return;
         }
 
@@ -212,7 +213,7 @@ public sealed class MainWindow : Window, IDisposable
             return hovered;
         }
 
-        foreach (var note in DmuMitigationData.GetMitigationNotes(entry.Event, slot))
+        foreach (var note in DmuMitigationData.GetMitigationNotes(entry.Event, slot, classJobId))
         {
             ImGui.SetCursorPosX(cursorX + SidePadding + iconSize + ImGui.GetStyle().ItemSpacing.X);
             ImGui.PushTextWrapPos(cursorX + MathF.Max(80.0f, width - SidePadding));
@@ -256,7 +257,7 @@ public sealed class MainWindow : Window, IDisposable
         MitigationCooldownWarning? warning)
     {
         var mitigationText = DmuMitigationData.GetMitigationDisplayText(entry.Event, slot, classJobId);
-        var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot);
+        var notes = DmuMitigationData.GetMitigationNotes(entry.Event, slot, classJobId);
         if (string.IsNullOrWhiteSpace(mitigationText) &&
             notes.Count == 0 &&
             string.IsNullOrWhiteSpace(entry.Event.Extras) &&

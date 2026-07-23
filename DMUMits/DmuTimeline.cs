@@ -182,7 +182,7 @@ public static partial class DmuMitigationData
 
     public static string GetMitigationDisplayText(DmuTimelineEvent entry, PartySlot slot, uint classJobId)
     {
-        var text = FormatMitigationText(entry.Phase, GetMitigationFor(entry, slot));
+        var text = FormatMitigationText(entry.Phase, GetMitigationTextForDisplay(entry, slot, classJobId));
         return classJobId == 0 ? text : MitigationTextResolver.ResolveForJob(text, classJobId);
     }
 
@@ -232,7 +232,12 @@ public static partial class DmuMitigationData
 
     public static IReadOnlyList<MitigationNote> GetMitigationNotes(DmuTimelineEvent entry, PartySlot slot)
     {
-        var text = GetMitigationFor(entry, slot);
+        return GetMitigationNotes(entry, slot, 0);
+    }
+
+    public static IReadOnlyList<MitigationNote> GetMitigationNotes(DmuTimelineEvent entry, PartySlot slot, uint classJobId)
+    {
+        var text = GetMitigationTextForDisplay(entry, slot, classJobId);
         if (string.IsNullOrWhiteSpace(text))
         {
             return [];
@@ -253,6 +258,30 @@ public static partial class DmuMitigationData
         }
 
         return notes;
+    }
+
+    private static string GetMitigationTextForDisplay(DmuTimelineEvent entry, PartySlot slot, uint classJobId)
+    {
+        var text = GetMitigationFor(entry, slot);
+        if (ActiveMitigationSheet == DmuMitigationSheet.Lpdu &&
+            slot == PartySlot.D2)
+        {
+            if (PartySlotHelper.IsCasterJob(classJobId))
+            {
+                return TryGetLpduD2CasterFakeMeleeExtra(entry.Id, out var casterMitigation)
+                    ? casterMitigation
+                    : string.Empty;
+            }
+
+            if (PartySlotHelper.IsPhysicalRangedJob(classJobId))
+            {
+                return TryGetLpduD2PhysicalRangedFakeMeleeExtra(entry.Id, out var physicalRangedMitigation)
+                    ? physicalRangedMitigation
+                    : string.Empty;
+            }
+        }
+
+        return text;
     }
 
     public static string GetMitigationNoteMarker(int number)

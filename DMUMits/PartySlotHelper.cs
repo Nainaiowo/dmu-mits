@@ -240,6 +240,16 @@ public static class PartySlotHelper
             CasterJobs.Contains(classJobId);
     }
 
+    public static bool IsCasterJob(uint classJobId)
+    {
+        return CasterJobs.Contains(classJobId);
+    }
+
+    public static bool IsPhysicalRangedJob(uint classJobId)
+    {
+        return PhysicalRangedJobs.Contains(classJobId);
+    }
+
     private static void AssignOrdered(
         List<PartySlotAssignment> assignments,
         HashSet<string> usedKeys,

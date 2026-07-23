@@ -485,7 +485,7 @@ public sealed class Plugin : IDalamudPlugin
         var highlighted = GetHighlightedMitigationEvent(now, slot.Value);
         return highlighted is null
             ? []
-            : DmuMitigationData.GetMitigationNotes(highlighted.Event, slot.Value);
+            : DmuMitigationData.GetMitigationNotes(highlighted.Event, slot.Value, GetClassJobIdForSlot(slot.Value));
     }
 
     private UpcomingMitigationEvent? GetHighlightedMitigationEvent(DateTime now, PartySlot slot)

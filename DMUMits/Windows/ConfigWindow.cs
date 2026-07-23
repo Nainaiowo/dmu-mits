@@ -146,7 +146,7 @@ public sealed class ConfigWindow : Window, IDisposable
         if (selectedSheet == DmuMitigationSheet.Lpdu)
         {
             ImGui.TextWrapped("LPDU uses its own phase sheets. Rows with different names, such as Hyperdrive and later P3 Thunder sets, are mapped explicitly.");
-            ImGui.TextColored(WarningColor, "Fake Melee Extras are not shown yet because there is no fake-melee-specific party slot.");
+            ImGui.TextColored(WarningColor, "Fake-melee extras are shown when D2 is assigned to a caster or physical ranged job.");
         }
         else
         {
