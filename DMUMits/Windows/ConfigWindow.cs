@@ -18,12 +18,10 @@ public sealed class ConfigWindow : Window, IDisposable
     private static readonly Vector4 PlaceholderBorderColor = new(1.0f, 1.0f, 1.0f, 0.22f);
     private static readonly Vector4 PlaceholderTextColor = new(0.70f, 0.74f, 0.78f, 1.0f);
     private PartySlot? draggingSlot;
-    private string mitigationSheetBuffer;
 
     public ConfigWindow(Plugin plugin) : base("DMU Mits Settings###DMUMitsConfig")
     {
         this.plugin = plugin;
-        mitigationSheetBuffer = plugin.Configuration.ImportedMitigationSheetText;
         Size = new Vector2(560, 440);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
@@ -47,7 +45,7 @@ public sealed class ConfigWindow : Window, IDisposable
 
         if (ImGui.BeginTabItem("Mit Sheet"))
         {
-            DrawMitigationSheetImport();
+            DrawMitigationSheetDetails();
             ImGui.EndTabItem();
         }
 
@@ -62,6 +60,9 @@ public sealed class ConfigWindow : Window, IDisposable
 
     private void DrawSettings()
     {
+        DrawMitigationPlanChoice();
+
+        ImGui.Spacing();
         DrawSectionHeader("Helper", "Window behavior and preview controls.");
         var showWindow = plugin.Configuration.ShowWindow;
         if (ImGui.Checkbox("Show helper", ref showWindow))
@@ -69,25 +70,15 @@ public sealed class ConfigWindow : Window, IDisposable
             plugin.SetShowWindow(showWindow);
         }
 
-        var lockHelper = plugin.Configuration.LockHelperWindow;
-        if (ImGui.Checkbox("Lock helper window", ref lockHelper))
+        var lockHelper = plugin.LockAndClickThroughHelperWindow;
+        if (ImGui.Checkbox("Lock and Clickthrough helper window", ref lockHelper))
         {
-            plugin.SetHelperWindowLocked(lockHelper);
-        }
-
-        var clickThrough = plugin.Configuration.ClickThroughHelperWindow;
-        if (ImGui.Checkbox("Clickthrough helper window", ref clickThrough))
-        {
-            plugin.SetHelperWindowClickThrough(clickThrough);
+            plugin.SetLockAndClickThroughHelperWindow(lockHelper);
         }
 
         ImGui.TextDisabled(lockHelper
-            ? "Unlock to move or resize the helper window."
+            ? "Disable to move, resize, or hover helper details."
             : "Move and resize the helper window, then lock it here.");
-        if (clickThrough)
-        {
-            ImGui.TextDisabled("Disable clickthrough to move, resize, or hover helper details.");
-        }
 
         var preview = plugin.Configuration.PreviewWhenInactive;
         if (ImGui.Checkbox("Preview when inactive", ref preview))
@@ -117,139 +108,49 @@ public sealed class ConfigWindow : Window, IDisposable
         DrawPartySlots();
     }
 
-    private void DrawMitigationSheetImport()
+    private void DrawMitigationPlanChoice()
     {
-        DrawSectionHeader("Mitigation sheet", "Paste copied Google Sheets or Excel cells. ACT timeline timing stays authoritative.");
-        ImGui.TextWrapped("Rows are matched by phase, mechanic name, and top-to-bottom order. Unmatched rows are listed here so wrong calls do not silently appear.");
+        DrawSectionHeader("Mitigation plan", "Choose which built-in sheet is shown on the ACT timeline.");
 
         ImGui.Spacing();
-        DrawMitigationSheetDefaultPhaseSelector();
-        DrawMitigationSheetActiveSelector();
-        ImGui.Spacing();
-        ImGui.InputTextMultiline("##DMUMitsMitSheetImport", ref mitigationSheetBuffer, 262144, new Vector2(-1.0f, 180.0f));
-
-        if (ImGui.Button("Paste clipboard"))
-        {
-            mitigationSheetBuffer = ImGui.GetClipboardText() ?? string.Empty;
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Import sheet"))
-        {
-            plugin.ImportMitigationSheet(mitigationSheetBuffer);
-        }
-
-        ImGui.SameLine();
-        if (ImGui.Button("Clear imported sheet"))
-        {
-            mitigationSheetBuffer = string.Empty;
-            plugin.ClearImportedMitigationSheet();
-        }
-
-        DrawMitigationSheetImportSummary();
+        DrawMitigationPlanDropdown("Active plan");
     }
 
-    private void DrawMitigationSheetDefaultPhaseSelector()
+    private void DrawMitigationPlanDropdown(string label)
     {
-        var labels = new[]
+        var sheets = Enum.GetValues<DmuMitigationSheet>();
+        var labels = sheets.Select(DmuMitigationData.GetMitigationSheetName).ToArray();
+        var index = Array.IndexOf(sheets, plugin.Configuration.MitigationSheet);
+        if (index < 0)
         {
-            "Require phase in pasted rows",
-            "P1 Kefka",
-            "P2 Forsaken Kefka",
-            "P3 Chaos & Exdeath",
-            "P4 Kefka Says",
-            "P5 Ultima Kefka",
-        };
-        var phase = plugin.Configuration.MitigationSheetDefaultPhase;
-        var index = phase switch
-        {
-            DmuPhase.P1 => 1,
-            DmuPhase.P2 => 2,
-            DmuPhase.P3 => 3,
-            DmuPhase.P4 => 4,
-            DmuPhase.P5 => 5,
-            _ => 0,
-        };
+            index = 0;
+        }
 
         ImGui.SetNextItemWidth(-1.0f);
-        if (!ImGui.Combo("Rows without a phase", ref index, labels, labels.Length))
+        if (ImGui.Combo(label, ref index, labels, labels.Length))
         {
-            return;
+            plugin.SetMitigationSheet(sheets[index]);
         }
-
-        var selectedPhase = index switch
-        {
-            1 => DmuPhase.P1,
-            2 => DmuPhase.P2,
-            3 => DmuPhase.P3,
-            4 => DmuPhase.P4,
-            5 => DmuPhase.P5,
-            _ => DmuPhase.Unknown,
-        };
-        plugin.SetMitigationSheetDefaultPhase(selectedPhase);
     }
 
-    private void DrawMitigationSheetActiveSelector()
+    private void DrawMitigationSheetDetails()
     {
-        var active = plugin.Configuration.UseImportedMitigationSheet;
-        var hasImportedText = !string.IsNullOrWhiteSpace(plugin.Configuration.ImportedMitigationSheetText);
-        ImGui.BeginDisabled(!hasImportedText);
-        if (ImGui.Checkbox("Use imported sheet instead of built-in fallback", ref active))
-        {
-            plugin.SetUseImportedMitigationSheet(active);
-        }
+        DrawSectionHeader("Mitigation sheet", "Current sheet status and mapping notes.");
+        ImGui.TextWrapped("Timings stay anchored to the ACT timeline. Sheet rows are baked into the plugin and mapped to specific mechanics.");
 
-        ImGui.EndDisabled();
-        ImGui.TextDisabled(hasImportedText
-            ? "Turn this off to use the built-in Ikuya fallback sheet again."
-            : "Built-in Ikuya fallback sheet is active until you import a sheet.");
-    }
-
-    private void DrawMitigationSheetImportSummary()
-    {
-        var result = plugin.MitigationSheetImportResult;
         ImGui.Spacing();
-        if (!plugin.Configuration.UseImportedMitigationSheet)
+        var selectedSheet = plugin.Configuration.MitigationSheet;
+        ImGui.TextColored(AccentColor, $"{DmuMitigationData.GetMitigationSheetName(selectedSheet)} active.");
+        ImGui.TextDisabled($"{DmuMitigationData.GetMitigationSheetRowCount(selectedSheet)} mapped mitigation rows.");
+
+        if (selectedSheet == DmuMitigationSheet.Lpdu)
         {
-            ImGui.TextColored(AccentColor, "Built-in fallback mit sheet is active.");
-        }
-        else if (result.ParsedRows == 0)
-        {
-            ImGui.TextColored(WarningColor, "No imported mitigation sheet is active. The helper will show timeline mechanics without mit calls.");
+            ImGui.TextWrapped("LPDU uses its own phase sheets. Rows with different names, such as Hyperdrive and later P3 Thunder sets, are mapped explicitly.");
+            ImGui.TextColored(WarningColor, "Fake Melee Extras are not shown yet because there is no fake-melee-specific party slot.");
         }
         else
         {
-            ImGui.TextColored(AccentColor, $"Imported {result.MatchedRows}/{result.ParsedRows} mitigation rows.");
-        }
-
-        if (result.Warnings.Count > 0)
-        {
-            ImGui.Spacing();
-            ImGui.TextColored(WarningColor, "Import warnings");
-            foreach (var warning in result.Warnings.Take(8))
-            {
-                ImGui.BulletText(warning);
-            }
-
-            if (result.Warnings.Count > 8)
-            {
-                ImGui.TextDisabled($"+ {result.Warnings.Count - 8} more");
-            }
-        }
-
-        if (result.UnmatchedMechanics.Count > 0)
-        {
-            ImGui.Spacing();
-            ImGui.TextColored(WarningColor, $"Unmatched rows ({result.UnmatchedRows})");
-            foreach (var mechanic in result.UnmatchedMechanics.Take(12))
-            {
-                ImGui.BulletText(mechanic);
-            }
-
-            if (result.UnmatchedMechanics.Count > 12)
-            {
-                ImGui.TextDisabled($"+ {result.UnmatchedMechanics.Count - 12} more");
-            }
+            ImGui.TextWrapped("The original built-in Ikuya Mitty sheet remains available as the default source.");
         }
     }
 

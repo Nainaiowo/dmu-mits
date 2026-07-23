@@ -27,11 +27,7 @@ public sealed class Configuration : IPluginConfiguration
 
     public List<PartySlotAssignment> PartySlots { get; set; } = [];
 
-    public string ImportedMitigationSheetText { get; set; } = string.Empty;
-
-    public bool UseImportedMitigationSheet { get; set; }
-
-    public DmuPhase MitigationSheetDefaultPhase { get; set; } = DmuPhase.Unknown;
+    public DmuMitigationSheet MitigationSheet { get; set; } = DmuMitigationSheet.IkuyaMitty;
 
     public void Save()
     {

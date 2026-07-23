@@ -13,10 +13,7 @@ public static partial class DmuMitigationData
     private static readonly IReadOnlyDictionary<PartySlot, string> EmptyMitigations =
         new Dictionary<PartySlot, string>();
 
-    private static IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> ImportedSheetMitigationOverrides =
-        new Dictionary<string, IReadOnlyDictionary<PartySlot, string>>();
-
-    private static bool UseImportedSheetMitigationOverrides;
+    private static DmuMitigationSheet ActiveMitigationSheet = DmuMitigationSheet.IkuyaMitty;
 
     private static readonly Regex MitigationNotePattern = new(@"\s*(?:\((\d+)\)|([⁰¹²³⁴⁵⁶⁷⁸⁹]+))", RegexOptions.Compiled);
 
@@ -74,6 +71,13 @@ public static partial class DmuMitigationData
         [DmuPhase.P4] = "P4 Kefka Says",
         [DmuPhase.P5] = "P5 Ultima Kefka",
     };
+
+    public static readonly IReadOnlyDictionary<DmuMitigationSheet, string> MitigationSheetNames =
+        new Dictionary<DmuMitigationSheet, string>
+        {
+            [DmuMitigationSheet.IkuyaMitty] = "Ikuya Mitty",
+            [DmuMitigationSheet.Lpdu] = "LPDU",
+        };
 
     private static readonly IReadOnlyDictionary<DmuPhase, float> ActPhaseStartTimes = new Dictionary<DmuPhase, float>
     {
@@ -195,24 +199,35 @@ public static partial class DmuMitigationData
 
     public static IReadOnlyDictionary<PartySlot, string> GetMitigations(DmuTimelineEvent entry)
     {
-        if (UseImportedSheetMitigationOverrides)
+        if (ActiveMitigationSheet == DmuMitigationSheet.Lpdu)
         {
-            return ImportedSheetMitigationOverrides.TryGetValue(entry.Id, out var importedMitigations)
-                ? importedMitigations
+            return TryGetLpduSheetMitigationOverride(entry.Id, out var lpduMitigations)
+                ? lpduMitigations
                 : EmptyMitigations;
         }
 
-        return TryGetFallbackSheetMitigationOverride(entry.Id, out var fallbackMitigations)
-            ? fallbackMitigations
+        return TryGetIkuyaSheetMitigationOverride(entry.Id, out var ikuyaMitigations)
+            ? ikuyaMitigations
             : entry.Mitigations;
     }
 
-    public static void SetImportedSheetMitigationOverrides(
-        IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> mitigations,
-        bool active)
+    public static void SetMitigationSheet(DmuMitigationSheet sheet)
     {
-        ImportedSheetMitigationOverrides = mitigations;
-        UseImportedSheetMitigationOverrides = active;
+        ActiveMitigationSheet = Enum.IsDefined(sheet) ? sheet : DmuMitigationSheet.IkuyaMitty;
+    }
+
+    public static string GetMitigationSheetName(DmuMitigationSheet sheet)
+    {
+        return MitigationSheetNames.TryGetValue(sheet, out var name) ? name : MitigationSheetNames[DmuMitigationSheet.IkuyaMitty];
+    }
+
+    public static int GetMitigationSheetRowCount(DmuMitigationSheet sheet)
+    {
+        return sheet switch
+        {
+            DmuMitigationSheet.Lpdu => LpduSheetMitigationOverrideCount,
+            _ => IkuyaSheetMitigationOverrideCount,
+        };
     }
 
     public static IReadOnlyList<MitigationNote> GetMitigationNotes(DmuTimelineEvent entry, PartySlot slot)

@@ -13,6 +13,12 @@ public enum DmuPhase
     P5,
 }
 
+public enum DmuMitigationSheet
+{
+    IkuyaMitty,
+    Lpdu,
+}
+
 public enum PartySlot
 {
     MT,

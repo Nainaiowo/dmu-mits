@@ -38,13 +38,9 @@ public sealed class MainWindow : Window, IDisposable
     public override void PreDraw()
     {
         Flags = ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoCollapse;
-        if (plugin.Configuration.LockHelperWindow)
+        if (plugin.LockAndClickThroughHelperWindow)
         {
             Flags |= ImGuiWindowFlags.NoMove | ImGuiWindowFlags.NoResize;
-        }
-
-        if (plugin.Configuration.ClickThroughHelperWindow)
-        {
             Flags |= ImGuiWindowFlags.NoInputs;
         }
     }

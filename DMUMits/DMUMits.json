@@ -4,7 +4,7 @@
   "InternalName": "DMUMits",
   "Punchline": "DMU mitigation timeline helper.",
   "Description": "Shows upcoming dmu mitigation based on fight timeline",
-  "Changelog": "Added importable mitigation sheets with a built-in fallback.",
+  "Changelog": "Added built-in mitigation plan selection and improved helper settings.",
   "RepoUrl": "https://github.com/Nainaiowo/dmu-mits",
   "ApplicableVersion": "any",
   "Tags": [

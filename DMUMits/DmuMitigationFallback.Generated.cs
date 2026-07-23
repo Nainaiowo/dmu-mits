@@ -6,7 +6,7 @@ namespace DMUMits;
 
 public static partial class DmuMitigationData
 {
-    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> FallbackSheetMitigationOverrides =
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<PartySlot, string>> IkuyaSheetMitigationOverrides =
         new Dictionary<string, IReadOnlyDictionary<PartySlot, string>>
         {
             // These baked rows moved to better ACT events in the current sheet merge.
@@ -87,8 +87,10 @@ public static partial class DmuMitigationData
             ["P5_FORSAKEN_NULL_01"] = M(mt: "Enrage!"),
         };
 
-    private static bool TryGetFallbackSheetMitigationOverride(string eventId, out IReadOnlyDictionary<PartySlot, string> mitigations)
+    private static int IkuyaSheetMitigationOverrideCount => IkuyaSheetMitigationOverrides.Count;
+
+    private static bool TryGetIkuyaSheetMitigationOverride(string eventId, out IReadOnlyDictionary<PartySlot, string> mitigations)
     {
-        return FallbackSheetMitigationOverrides.TryGetValue(eventId, out mitigations!);
+        return IkuyaSheetMitigationOverrides.TryGetValue(eventId, out mitigations!);
     }
 }

@@ -62,8 +62,6 @@ public sealed class Plugin : IDalamudPlugin
 
     public Configuration Configuration { get; }
 
-    public MitigationSheetImportResult MitigationSheetImportResult { get; private set; } = MitigationSheetImportResult.Empty;
-
     public IReadOnlyList<PartyMemberInfo> CurrentParty { get; private set; } = [];
 
     public PhaseState? CurrentPhaseState { get; private set; }
@@ -76,11 +74,14 @@ public sealed class Plugin : IDalamudPlugin
 
     public bool IsPreviewActive => CurrentPhaseState is null && Configuration.PreviewWhenInactive;
 
+    public bool LockAndClickThroughHelperWindow => Configuration.LockHelperWindow || Configuration.ClickThroughHelperWindow;
+
     public Plugin()
     {
         Configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         EnsureSlotList();
-        RebuildImportedMitigationSheet();
+        NormalizeHelperWindowInteractionSettings();
+        DmuMitigationData.SetMitigationSheet(Configuration.MitigationSheet);
 
         mainWindow = new MainWindow(this)
         {
@@ -125,14 +126,9 @@ public sealed class Plugin : IDalamudPlugin
         mainWindow.Dispose();
     }
 
-    public void SetHelperWindowLocked(bool locked)
+    public void SetLockAndClickThroughHelperWindow(bool enabled)
     {
-        Configuration.LockHelperWindow = locked;
-        SaveConfiguration();
-    }
-
-    public void SetHelperWindowClickThrough(bool enabled)
-    {
+        Configuration.LockHelperWindow = enabled;
         Configuration.ClickThroughHelperWindow = enabled;
         SaveConfiguration();
     }
@@ -179,36 +175,12 @@ public sealed class Plugin : IDalamudPlugin
         SaveConfiguration();
     }
 
-    public void SetMitigationSheetDefaultPhase(DmuPhase phase)
+    public void SetMitigationSheet(DmuMitigationSheet sheet)
     {
-        Configuration.MitigationSheetDefaultPhase = phase is >= DmuPhase.Unknown and <= DmuPhase.P5
-            ? phase
-            : DmuPhase.Unknown;
-        RebuildImportedMitigationSheet();
-        SaveConfiguration();
-    }
-
-    public void SetUseImportedMitigationSheet(bool active)
-    {
-        Configuration.UseImportedMitigationSheet = active &&
-            !string.IsNullOrWhiteSpace(Configuration.ImportedMitigationSheetText);
-        RebuildImportedMitigationSheet();
-        SaveConfiguration();
-    }
-
-    public void ImportMitigationSheet(string rawSheetText)
-    {
-        Configuration.ImportedMitigationSheetText = rawSheetText ?? string.Empty;
-        Configuration.UseImportedMitigationSheet = !string.IsNullOrWhiteSpace(Configuration.ImportedMitigationSheetText);
-        RebuildImportedMitigationSheet();
-        SaveConfiguration();
-    }
-
-    public void ClearImportedMitigationSheet()
-    {
-        Configuration.ImportedMitigationSheetText = string.Empty;
-        Configuration.UseImportedMitigationSheet = false;
-        RebuildImportedMitigationSheet();
+        Configuration.MitigationSheet = Enum.IsDefined(sheet)
+            ? sheet
+            : DmuMitigationSheet.IkuyaMitty;
+        DmuMitigationData.SetMitigationSheet(Configuration.MitigationSheet);
         SaveConfiguration();
     }
 
@@ -216,6 +188,20 @@ public sealed class Plugin : IDalamudPlugin
     {
         EnsureSlotList();
         Configuration.Save();
+    }
+
+    private void NormalizeHelperWindowInteractionSettings()
+    {
+        var combined = LockAndClickThroughHelperWindow;
+        if (Configuration.LockHelperWindow == combined &&
+            Configuration.ClickThroughHelperWindow == combined)
+        {
+            return;
+        }
+
+        Configuration.LockHelperWindow = combined;
+        Configuration.ClickThroughHelperWindow = combined;
+        SaveConfiguration();
     }
 
     public void AutoAssignPartySlots()
@@ -515,14 +501,6 @@ public sealed class Plugin : IDalamudPlugin
     {
         return !string.IsNullOrWhiteSpace(
             DmuMitigationData.GetMitigationDisplayText(entry, slot, GetClassJobIdForSlot(slot)));
-    }
-
-    private void RebuildImportedMitigationSheet()
-    {
-        MitigationSheetImportResult = MitigationSheetImporter.Import(
-            Configuration.ImportedMitigationSheetText,
-            Configuration.MitigationSheetDefaultPhase,
-            Configuration.UseImportedMitigationSheet);
     }
 
     private void OnMainCommand(string command, string args)
