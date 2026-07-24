@@ -7,6 +7,7 @@ namespace DMUMits;
 public static class PartySlotHelper
 {
     public const string NameKeyPrefix = "Name:";
+    public const string EntityKeyPrefix = "Entity:";
     private static readonly uint[] TankJobs = [19, 21, 32, 37];
     private static readonly uint[] HealerJobs = [24, 28, 33, 40];
     private static readonly uint[] MeleeJobs = [20, 22, 30, 34, 39, 41];
@@ -156,11 +157,16 @@ public static class PartySlotHelper
         return string.IsNullOrWhiteSpace(normalizedName) ? string.Empty : $"{NameKeyPrefix}{normalizedName}";
     }
 
+    public static string BuildEntityKey(uint entityId)
+    {
+        return entityId == 0 ? string.Empty : $"{EntityKeyPrefix}{entityId:X8}";
+    }
+
     private static bool ShouldUseNameFallback(string assignmentKey, string memberKey)
     {
         return string.IsNullOrWhiteSpace(assignmentKey) ||
-            assignmentKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal) ||
-            memberKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal);
+            (assignmentKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal) &&
+                memberKey.StartsWith(NameKeyPrefix, StringComparison.Ordinal));
     }
 
     public static PartySlot? GetDefaultSlotForJob(uint classJobId)

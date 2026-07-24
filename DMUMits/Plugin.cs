@@ -11,6 +11,7 @@ using Dalamud.Plugin.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 
 namespace DMUMits;
 
@@ -26,7 +27,8 @@ public sealed class Plugin : IDalamudPlugin
 
     private const string MainCommandName = "/dmumits";
     private const string ShortCommandName = "/dmit";
-    private static readonly TimeSpan SyncPollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan TimelineSyncPollInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan PartyPollInterval = TimeSpan.FromMilliseconds(250);
     private const float PreviewLeadInSeconds = 14.0f;
     private const float PreviewLoopPaddingSeconds = 12.0f;
     private const uint P2WingsOfDestructionLeftActionId = 47821;
@@ -55,7 +57,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly DateTime previewStartedAtUtc = DateTime.UtcNow;
     private readonly HashSet<string> firedTimelineAnchorKeys = [];
     private DateTime lastSyncPollAtUtc = DateTime.MinValue;
-    private int? lastPartySignature;
+    private DateTime lastPartyPollAtUtc = DateTime.MinValue;
+    private string? lastPartySignature;
     private DateTime? pendingP3StartAtUtc;
     private bool sawLateP2Wings;
     private bool wasInCombat;
@@ -228,7 +231,7 @@ public sealed class Plugin : IDalamudPlugin
         {
             foreach (var other in Configuration.PartySlots.Where(slot =>
                 slot.Slot != assignment.Slot &&
-                PartySlotHelper.AssignmentMatchesMember(slot, member)))
+                AssignmentMatchesCurrentPartyMember(slot, member)))
             {
                 ClearAssignment(other);
             }
@@ -512,24 +515,36 @@ public sealed class Plugin : IDalamudPlugin
     {
         ResetPhaseState();
         lastPartySignature = null;
+        lastPartyPollAtUtc = DateTime.MinValue;
         wasInCombat = false;
     }
 
     private void OnFrameworkUpdate(IFramework framework)
     {
         var now = DateTime.UtcNow;
-        if (now - lastSyncPollAtUtc < SyncPollInterval)
+        RefreshParty(now);
+        if (now - lastSyncPollAtUtc < TimelineSyncPollInterval)
         {
             return;
         }
 
         lastSyncPollAtUtc = now;
-        RefreshParty();
         RefreshPhaseState(now);
     }
 
     private void RefreshParty(bool force = false)
     {
+        RefreshParty(DateTime.UtcNow, force);
+    }
+
+    private void RefreshParty(DateTime now, bool force = false)
+    {
+        if (!force && now - lastPartyPollAtUtc < PartyPollInterval)
+        {
+            return;
+        }
+
+        lastPartyPollAtUtc = now;
         var signature = BuildPartySignature();
         if (!force && lastPartySignature == signature)
         {
@@ -540,32 +555,48 @@ public sealed class Plugin : IDalamudPlugin
         RebuildPartySnapshot();
     }
 
-    private int BuildPartySignature()
+    private string BuildPartySignature()
     {
-        var hash = new HashCode();
-        hash.Add(ClientState.TerritoryType);
-        hash.Add(PlayerState.ContentId);
-        hash.Add(PartyList.Length);
-        hash.Add(PartyList.PartyId);
-        hash.Add(PartyList.IsAlliance);
+        var signature = new StringBuilder();
+        signature
+            .Append(ClientState.IsLoggedIn ? '1' : '0')
+            .Append('|')
+            .Append(ClientState.TerritoryType)
+            .Append('|')
+            .Append(PlayerState.ContentId.ToString("X16"))
+            .Append('|')
+            .Append(PartyList.Length)
+            .Append('|')
+            .Append(PartyList.PartyId)
+            .Append('|')
+            .Append(PartyList.IsAlliance ? '1' : '0');
 
         foreach (var member in PartyList)
         {
-            hash.Add(member.Name.TextValue, StringComparer.OrdinalIgnoreCase);
-            hash.Add(member.ContentId);
-            hash.Add(member.EntityId);
-            hash.Add(member.ClassJob.RowId);
+            signature
+                .Append("|m:")
+                .Append(member.Name.TextValue.Trim().ToUpperInvariant())
+                .Append(':')
+                .Append(member.ContentId.ToString("X16"))
+                .Append(':')
+                .Append(member.EntityId.ToString("X8"))
+                .Append(':')
+                .Append(member.ClassJob.RowId);
         }
 
         var localPlayer = ObjectTable.LocalPlayer;
         if (localPlayer is not null)
         {
-            hash.Add(localPlayer.Name.TextValue, StringComparer.OrdinalIgnoreCase);
-            hash.Add(localPlayer.EntityId);
-            hash.Add(localPlayer.ClassJob.RowId);
+            signature
+                .Append("|local:")
+                .Append(localPlayer.Name.TextValue.Trim().ToUpperInvariant())
+                .Append(':')
+                .Append(localPlayer.EntityId.ToString("X8"))
+                .Append(':')
+                .Append(localPlayer.ClassJob.RowId);
         }
 
-        return hash.ToHashCode();
+        return signature.ToString();
     }
 
     private void RebuildPartySnapshot()
@@ -584,9 +615,13 @@ public sealed class Plugin : IDalamudPlugin
                 continue;
             }
 
-            var key = member.ContentId != 0
-                ? member.ContentId.ToString("X16")
-                : PartySlotHelper.BuildNameKey(name);
+            var key = BuildMemberKey(name, member.ContentId, member.EntityId);
+            if (string.IsNullOrWhiteSpace(key))
+            {
+                index++;
+                continue;
+            }
+
             members.Add(new PartyMemberInfo(
                 key,
                 name,
@@ -606,6 +641,12 @@ public sealed class Plugin : IDalamudPlugin
         AddLocalPlayerIfMissing(members, trackedEntityIds, trackedNames, index, localContentId);
 
         CurrentParty = members;
+        if (CurrentParty.Count == 0)
+        {
+            LocalSlot = null;
+            return;
+        }
+
         var changed = ReconcilePartyAssignments();
         changed |= FillOpenPartySlotsFromCurrentParty();
         if (changed)
@@ -614,6 +655,21 @@ public sealed class Plugin : IDalamudPlugin
         }
 
         RefreshLocalSlot();
+    }
+
+    private static string BuildMemberKey(string name, ulong contentId, uint entityId)
+    {
+        if (contentId != 0)
+        {
+            return contentId.ToString("X16");
+        }
+
+        if (entityId != 0)
+        {
+            return PartySlotHelper.BuildEntityKey(entityId);
+        }
+
+        return PartySlotHelper.BuildNameKey(name);
     }
 
     private static void AddLocalPlayerIfMissing(
@@ -637,9 +693,7 @@ public sealed class Plugin : IDalamudPlugin
             return;
         }
 
-        var memberKey = localContentId != 0
-            ? localContentId.ToString("X16")
-            : PartySlotHelper.BuildNameKey(memberName);
+        var memberKey = BuildMemberKey(memberName, localContentId, localPlayer.EntityId);
         if (string.IsNullOrWhiteSpace(memberKey))
         {
             return;
@@ -789,7 +843,40 @@ public sealed class Plugin : IDalamudPlugin
 
     private PartyMemberInfo? FindCurrentPartyMemberForAssignment(PartySlotAssignment assignment)
     {
-        return CurrentParty.FirstOrDefault(member => PartySlotHelper.AssignmentMatchesMember(assignment, member));
+        var exactMember = CurrentParty.FirstOrDefault(member => PartySlotHelper.AssignmentMatchesMember(assignment, member));
+        if (exactMember is not null ||
+            string.IsNullOrWhiteSpace(assignment.MemberKey) ||
+            !assignment.MemberKey.StartsWith(PartySlotHelper.NameKeyPrefix, StringComparison.Ordinal))
+        {
+            return exactMember;
+        }
+
+        var normalizedName = PartySlotHelper.NormalizeMemberName(assignment.MemberName);
+        if (string.IsNullOrWhiteSpace(normalizedName))
+        {
+            return null;
+        }
+
+        var nameMatches = CurrentParty
+            .Where(member => string.Equals(
+                PartySlotHelper.NormalizeMemberName(member.Name),
+                normalizedName,
+                StringComparison.OrdinalIgnoreCase))
+            .Take(2)
+            .ToList();
+
+        return nameMatches.Count == 1 ? nameMatches[0] : null;
+    }
+
+    private bool AssignmentMatchesCurrentPartyMember(PartySlotAssignment assignment, PartyMemberInfo member)
+    {
+        if (PartySlotHelper.AssignmentMatchesMember(assignment, member))
+        {
+            return true;
+        }
+
+        return FindCurrentPartyMemberForAssignment(assignment) is { } matchingMember &&
+            string.Equals(matchingMember.Key, member.Key, StringComparison.Ordinal);
     }
 
     private bool TryMoveAssignmentToDefaultSlot(PartySlotAssignment assignment, PartyMemberInfo member)
